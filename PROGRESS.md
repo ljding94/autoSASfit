@@ -15,6 +15,32 @@ group related events. Quote actual command output verbatim — claims like
 
 ---
 
+## Milestones tracker
+
+The five near-term gates from `PROJECT_PLAN.md` §9 / §12. Detailed
+write-ups for each landed-gate live in the dated entries below.
+
+| # | Gate | Status | Key evidence |
+|---|---|---|---|
+| 1 | **Phase-0 reality check** — sphere fit end-to-end through real `sasmodels`+`bumps` | ✅ 2026-04-27 | radius recovered 60 → 59.996 Å, χ²ᵣ=0.779; `outputs/quickstart_fit.png` |
+| 2 | **Informed non-AI floor** — `HeuristicProposer` (Guinier/Porod) + `BumpsRestartProposer` (history-best anchor) | ✅ 2026-04-27 | commit [`1320c20`](https://github.com/ljding94/autoSASfit/commit/1320c20); 12/12 sandbox tests green |
+| 3 | **Phase-1 baseline locked** — run all four classical lanes; commit numbers as the non-AI floor every VLM must beat | ⏳ next | `scripts/run_baseline_eval.py` ready, not yet executed |
+| 4 | **Held-out Axis-0 seed frozen** — `dev` seed for prompt iteration vs `reported` seed (untouched until final number) | ⏳ pending | not yet split in `eval/corpus.py` |
+| 5 | **First scorecard row** — `LLMProposer` against Claude on Axis 0 + Axis B, with critique cache | ⏳ pending | `proposer/llm.py` is a stub |
+
+Meta-changes shipped alongside the gates:
+
+- χ²ᵣ regression fixed in `fitting/bumps_wrapper.py` — caught while
+  validating gate 1; would have silently invalidated all later
+  χ²-conditional acceptance numbers (commit
+  [`c1aeeea`](https://github.com/ljding94/autoSASfit/commit/c1aeeea)).
+- `CLAUDE.md` ramp-up doc for future sessions
+  ([`dfec791`](https://github.com/ljding94/autoSASfit/commit/dfec791)).
+- This file, `PROGRESS.md`, started 2026-04-27
+  ([`2f0e761`](https://github.com/ljding94/autoSASfit/commit/2f0e761)).
+
+---
+
 ## 2026-04-27
 
 ### Phase-0 reality check — gate met
