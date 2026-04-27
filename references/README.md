@@ -20,6 +20,7 @@ explaining why we care.
     │   └── data_formats.md
     └── related_work/             ← ML / auto-fit prior art
         ├── ml_for_sas.md
+        ├── ai_fitter_cao2026.md  ← closest neighbor: generic-physics LLM fitter
         ├── auto_fitting.md       ← non-ML automated initial-guess work
         └── vision_llm_for_science.md
 

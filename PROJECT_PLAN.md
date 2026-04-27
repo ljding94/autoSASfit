@@ -25,14 +25,23 @@ human-only judgments remain in the loop:
    thousand correctly-fit baseline points; a human looking at the plot
    says "no, the bump is in the wrong place."
 
-Prior art on automating these judgments splits two ways. **Classifier-
-style ML** (SCAN, Acta Cryst CNNs, JACS Au ANN+MCMC) trains once on a
-~10⁵-curve simulated database, predicts once, and hands off to an
-optimizer. **Classical global optimization** (`bumps` DE / multi-start
-/ DREAM) burns evals as a black box without ever looking at the curve.
-Neither approach makes iterative, plot-grounded judgments. Both report
-a single accuracy or χ² number; neither is asked the most important
-operational question, *do you know when you are wrong?*
+Prior art on automating these judgments splits three ways.
+**Classifier-style ML** (SCAN, Acta Cryst CNNs, JACS Au ANN+MCMC)
+trains once on a ~10⁵-curve simulated database, predicts once, and
+hands off to an optimizer. **Classical global optimization** (`bumps`
+DE / multi-start / DREAM) burns evals as a black box without ever
+looking at the curve. **Domain-general LLM fitters** — AI-Fitter
+(Cao et al., APS March 2026; see
+`references/related_work/ai_fitter_cao2026.md`) is the closest
+neighbor — automate the full loop (initial guesses, loss, stopping
+rules) for arbitrary analytic forms over a heterogeneous equation
+corpus. The first two strands don't iterate once they've handed off;
+the third does, but on generic analytic forms with a single fit-
+quality threshold, not on the plot-grounded, feature-aware judgments
+a domain expert makes. All three report one number; none separately
+measures compositional reasoning, calibration of self-judgment, or
+feature-grounded preference. None is asked the operational question
+that matters at the beamline, *do you know when you are wrong?*
 
 Vision-LLMs (Claude Opus 4.7, GPT-5.4, Gemini 3.x) are the obvious
 candidate to fill that gap — they read scientific figures, reason
