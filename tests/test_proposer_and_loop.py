@@ -26,7 +26,9 @@ from autosasfit.eval.harness import run_corpus  # noqa: E402
 from autosasfit.loop import controller as controller_mod  # noqa: E402
 from autosasfit.loop.controller import AcceptanceCriterion, run_loop  # noqa: E402
 from autosasfit.proposer.base import Iteration, Problem, Proposal  # noqa: E402
+from autosasfit.proposer.heuristic import HeuristicProposer  # noqa: E402
 from autosasfit.proposer.random_proposer import (  # noqa: E402
+    BumpsRestartProposer,
     LatinHypercubeProposer,
     RandomProposer,
 )
@@ -166,6 +168,154 @@ def test_lhs_proposer_consumes_starts_then_gives_up():
     assert p.action == "give_up"
 
 
+def test_heuristic_proposer_recovers_sphere_radius():
+    """Hand-built Guinier signal: I(Q) = I0 exp(-Rg²Q²/3) + bg. The proposer
+    should back out a sphere radius within ~15% of truth from the low-Q slope.
+    No sasmodels dependency — this is a pure-numpy test of the heuristic."""
+    import math
+    R_true = 60.0
+    Rg_true = R_true * math.sqrt(3.0 / 5.0)
+    bg_true = 1e-3
+    q = np.logspace(-3, -0.5, 200)
+    Iq = 1000.0 * np.exp(-Rg_true ** 2 * q ** 2 / 3.0) + bg_true
+    dIq = 0.03 * Iq
+
+    prob = Problem(
+        model="sphere",
+        true_params={"scale": 1.0, "radius": R_true, "background": bg_true},
+        init_params={"scale": 1.0, "radius": R_true, "background": bg_true},
+        q=q, Iq=Iq, dIq=dIq, label="t-heur-sphere",
+    )
+    hp = HeuristicProposer(seed=0)
+    p = hp.propose(prob, [])
+
+    assert p.action == "refine"
+    assert p.init_params is not None
+    r = p.init_params["radius"]
+    assert 0.85 * R_true < r < 1.15 * R_true, \
+        f"heuristic radius {r:.2f} not within 15% of {R_true}"
+
+
+def test_heuristic_proposer_recovers_power_law_exponent():
+    """Hand-built power law: I(Q) = scale * Q^(-power) + bg. Log-log fit
+    should recover power and scale almost exactly on clean data."""
+    power_true = 3.0
+    scale_true = 1e-2
+    bg_true = 1e-3
+    q = np.logspace(-2, 0, 100)
+    Iq = scale_true * q ** (-power_true) + bg_true
+    dIq = 0.03 * Iq
+
+    prob = Problem(
+        model="power_law",
+        true_params={"scale": scale_true, "power": power_true, "background": bg_true},
+        init_params={"scale": scale_true, "power": power_true, "background": bg_true},
+        q=q, Iq=Iq, dIq=dIq, label="t-heur-pow",
+    )
+    hp = HeuristicProposer(seed=0)
+    p = hp.propose(prob, [])
+
+    assert p.action == "refine"
+    assert p.init_params is not None
+    assert abs(p.init_params["power"] - power_true) < 0.3
+    # scale recovery less tight; just check it's the right order of magnitude.
+    assert 0.1 * scale_true < p.init_params["scale"] < 10.0 * scale_true
+
+
+def test_heuristic_proposer_jitter_after_seed():
+    """Iter ≥ 1 should differ from iter 0 (jittered) but stay in bounds."""
+    from autosasfit.models.registry import REGISTRY
+    q = np.logspace(-3, -0.5, 50)
+    Iq = np.exp(-q ** 2 * 1000) + 1e-3
+    prob = Problem(
+        model="sphere",
+        true_params={"scale": 1.0, "radius": 50.0, "background": 1e-3},
+        init_params={"scale": 1.0, "radius": 50.0, "background": 1e-3},
+        q=q, Iq=Iq, dIq=0.03 * Iq, label="t-heur-jitter",
+    )
+    hp = HeuristicProposer(seed=42, jitter_rel=0.20)
+    spec = REGISTRY["sphere"]
+
+    p0 = hp.propose(prob, [])
+    assert p0.init_params is not None
+    seed_params = p0.init_params
+    fake_history = [Iteration(
+        iter=0, model="sphere", init_params=seed_params,
+        fit_params=seed_params, chi2_red=10.0, n_inner_evals=0,
+    )]
+    differs = False
+    for i in range(1, 10):
+        pi = hp.propose(prob, fake_history)
+        assert pi.init_params is not None
+        # Bounds respected.
+        for name, v in pi.init_params.items():
+            lo, hi = spec.bounds[name]
+            assert lo <= v <= hi, f"iter {i}: {name}={v} out of [{lo}, {hi}]"
+        if pi.init_params != seed_params:
+            differs = True
+        fake_history.append(Iteration(
+            iter=i, model="sphere", init_params=pi.init_params,
+            fit_params=pi.init_params, chi2_red=10.0, n_inner_evals=0,
+        ))
+    assert differs, "iter ≥ 1 produced no jitter (every proposal == seed)"
+
+
+def test_bumps_restart_anchors_to_history_best():
+    """BumpsRestartProposer should jitter around the *lowest-χ²ᵣ* fit in
+    history, not the most recent one."""
+    truth = {"scale": 1.0, "radius": 50.0, "background": 1e-3}
+    prob = Problem(model="sphere", true_params=truth, init_params=truth,
+                   q=np.zeros(1), Iq=np.zeros(1), dIq=np.ones(1),
+                   label="t-bumps-anchor")
+    # Iter 1 has the lowest chi2 — that's the anchor.
+    history = [
+        Iteration(iter=0, model="sphere", init_params={},
+                  fit_params={"scale": 5.0, "radius": 300.0, "background": 0.5},
+                  chi2_red=100.0, n_inner_evals=200),
+        Iteration(iter=1, model="sphere", init_params={},
+                  fit_params={"scale": 1.1, "radius": 50.0, "background": 1e-3},
+                  chi2_red=2.0, n_inner_evals=200),
+        Iteration(iter=2, model="sphere", init_params={},
+                  fit_params={"scale": 0.01, "radius": 400.0, "background": 0.9},
+                  chi2_red=80.0, n_inner_evals=200),
+    ]
+    # Tiny jitter so the anchor is unambiguous.
+    bp = BumpsRestartProposer(seed=0, jitter_rel=0.05)
+    p = bp.propose(prob, history)
+    assert p.action == "refine"
+    assert p.init_params is not None
+    # Should be near radius=50 (anchor), not radius∈{300, 400} (worse fits).
+    assert abs(p.init_params["radius"] - 50.0) < 20.0
+    assert abs(p.init_params["radius"] - 300.0) > 100.0
+
+
+def test_bumps_restart_obeys_bounds():
+    """Across many iters with a worst-case anchor at a bound, params stay
+    in bounds (clamping works in both directions)."""
+    from autosasfit.models.registry import REGISTRY
+    spec = REGISTRY["sphere"]
+    truth = {"scale": 1.0, "radius": 50.0, "background": 1e-3}
+    prob = Problem(model="sphere", true_params=truth, init_params=truth,
+                   q=np.zeros(1), Iq=np.zeros(1), dIq=np.ones(1),
+                   label="t-bumps-bounds")
+    # Anchor sitting on the upper radius bound — without clamping the
+    # jitter would push out.
+    history = [Iteration(
+        iter=0, model="sphere", init_params={},
+        fit_params={"scale": spec.bounds["scale"][1],
+                    "radius": spec.bounds["radius"][1],
+                    "background": spec.bounds["background"][1]},
+        chi2_red=1.0, n_inner_evals=200,
+    )]
+    bp = BumpsRestartProposer(seed=0, jitter_rel=0.50)  # large jitter
+    for _ in range(100):
+        p = bp.propose(prob, history)
+        assert p.init_params is not None
+        for name, v in p.init_params.items():
+            lo, hi = spec.bounds[name]
+            assert lo <= v <= hi, f"{name}={v} out of [{lo}, {hi}]"
+
+
 def test_render_fit_plot_writes_png(tmp_path):
     q = np.logspace(-3, 0, 64)
     Iq = 1.0 / (1 + (q * 50) ** 4) + 1e-3
@@ -232,6 +382,15 @@ if __name__ == "__main__":
     _run("test_random_proposer_obeys_bounds", test_random_proposer_obeys_bounds, None)
     _run("test_lhs_proposer_consumes_starts_then_gives_up",
          test_lhs_proposer_consumes_starts_then_gives_up)
+    _run("test_heuristic_proposer_recovers_sphere_radius",
+         test_heuristic_proposer_recovers_sphere_radius)
+    _run("test_heuristic_proposer_recovers_power_law_exponent",
+         test_heuristic_proposer_recovers_power_law_exponent)
+    _run("test_heuristic_proposer_jitter_after_seed",
+         test_heuristic_proposer_jitter_after_seed)
+    _run("test_bumps_restart_anchors_to_history_best",
+         test_bumps_restart_anchors_to_history_best)
+    _run("test_bumps_restart_obeys_bounds", test_bumps_restart_obeys_bounds)
 
     mp = _MP()
     try:

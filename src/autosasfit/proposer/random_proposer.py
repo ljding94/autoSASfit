@@ -77,3 +77,63 @@ class LatinHypercubeProposer:
             init_params=self.starts[i],
             note=f"LHS start #{i + 1}",
         )
+
+
+class BumpsRestartProposer:
+    """Practitioner-style random restart: cold-start uniform on iter 0,
+    then Gaussian jitter (in log-space for log-scale params) around the
+    *best fit seen so far* on subsequent iters.
+
+    Distinct from `RandomProposer` (independent uniform every iter) — this
+    matches what a SasView/bumps user actually does: kick off a random
+    init, look at the result, and nudge the best fit to try to escape a
+    shallow local minimum without throwing away what worked.
+    """
+    name = "bumps_restart"
+
+    def __init__(self, seed: int = 0, jitter_rel: float = 0.20):
+        self.rng = np.random.default_rng(seed)
+        self.jitter_rel = jitter_rel
+
+    def _uniform(self, spec) -> dict[str, float]:
+        params: dict[str, float] = {}
+        for p in spec.fit_params:
+            lo, hi = spec.bounds[p]
+            if p in spec.log_scale_params and lo > 0:
+                params[p] = float(math.exp(self.rng.uniform(math.log(lo), math.log(hi))))
+            else:
+                params[p] = float(self.rng.uniform(lo, hi))
+        return params
+
+    def propose(self, problem: Problem, history: list[Iteration]) -> Proposal:
+        spec = REGISTRY[problem.model]
+
+        if not history:
+            return Proposal(
+                action="refine",
+                init_params=self._uniform(spec),
+                note="bumps random restart (cold start)",
+            )
+
+        # Anchor to the lowest-χ²ᵣ fit seen so far. This is the "escape
+        # local minimum by nudging" move; if every prior fit was bad,
+        # this still tries to ride the least-bad one toward a better
+        # basin rather than throw the iteration budget away.
+        best = min(history, key=lambda it: it.chi2_red)
+        anchor = best.fit_params
+
+        jittered: dict[str, float] = {}
+        for p in spec.fit_params:
+            lo, hi = spec.bounds[p]
+            v0 = anchor.get(p, 0.5 * (lo + hi))
+            if p in spec.log_scale_params and v0 > 0:
+                v = math.exp(math.log(v0) + self.rng.normal(0.0, self.jitter_rel))
+            else:
+                v = v0 * (1.0 + self.rng.normal(0.0, self.jitter_rel))
+            jittered[p] = float(min(max(v, lo), hi))
+
+        return Proposal(
+            action="refine",
+            init_params=jittered,
+            note=f"bumps restart (jitter around best so far, χ²ᵣ={best.chi2_red:.2f})",
+        )

@@ -156,6 +156,79 @@ Captures: benchmark-not-tool framing; the two-tier sasmodels/bumps import
 split that keeps `proposer/`/`loop/`/`eval/` sandbox-testable; the
 Proposer = unit-of-comparison invariant; locked canonical plot.
 
+### Milestone 2 — informed non-AI floor implemented
+
+Added the two remaining classical-baseline proposers that the LLM
+critic will eventually have to beat. Both are wired into
+`scripts/run_baseline_eval.py`; the Phase-1 baseline run itself
+(milestone 3) hasn't been executed yet.
+
+**`HeuristicProposer`** (`src/autosasfit/proposer/heuristic.py`).
+Reads the data on iter 0 and produces a domain-informed seed:
+
+- *Sphere/cylinder.* Linear fit of ln(I − bg) vs Q² over the lowest
+  25% of Q points → Guinier slope → Rg = √(−3·slope) → R = Rg·√(5/3)
+  for sphere. Cylinder re-uses Rg as a rough effective radius and
+  puts length at the geometric midpoint of its bounds (cylinder Rg
+  mixes both length scales, so this is informed-but-not-tight).
+- *Power law.* Log-log fit of (I − bg) vs Q recovers `power = −slope`
+  and `scale = exp(intercept)` directly — effectively exact on
+  clean data.
+- *Background, all models.* Median of the upper-10% Q tail.
+- *Scale, sphere/cylinder.* Defaults to 1.0 (clamped to bounds). A
+  per-model formula could back scale out of the absolute I(0); for
+  the Phase-1 informed baseline, getting Rg and bg right is the
+  heavy lifting and 1.0 is a reasonable starting point.
+
+Iter ≥ 1 returns a Gaussian-jittered version of the iter-0 seed
+(10% relative, in log space for `log_scale_params`). Treats the
+heuristic as a "good basin" and uses the iteration budget to explore
+around it rather than wasting iters on independent re-draws — that
+is `RandomProposer`'s job. Unknown models fall back to bounds-uniform
+sampling so the proposer never crashes on a registry entry without
+a heuristic.
+
+**`BumpsRestartProposer`** (added to
+`src/autosasfit/proposer/random_proposer.py`). Practitioner-style
+random restart, distinct from `RandomProposer`'s independent
+uniform-every-iter strategy:
+
+- *Iter 0.* Cold-start uniform/log-uniform on the registry bounds.
+- *Iter ≥ 1.* Gaussian jitter (in log space for `log_scale_params`)
+  around the **lowest-χ²ᵣ fit seen so far in `history`**. This is
+  the move a SasView/bumps user actually makes: kick off a random
+  init, look at the result, nudge the best fit to escape a shallow
+  local minimum without throwing away what worked.
+
+The χ²ᵣ-min anchor makes the BumpsRestart lane materially different
+from Random (ignores history) and Heuristic (anchors to its own
+data-derived seed regardless of fit quality). All three lanes share
+the same outer-loop iteration count, so cross-lane comparisons at
+fixed iter budget remain apples-to-apples.
+
+**Tests.** Five new sandbox tests (no sasmodels needed):
+
+- `test_heuristic_proposer_recovers_sphere_radius` — hand-built
+  Guinier signal `I(Q) = I₀·exp(−Rg²Q²/3) + bg` with R=60 Å;
+  proposer recovers radius within 15%.
+- `test_heuristic_proposer_recovers_power_law_exponent` — clean
+  power-law data with `power=3.0`, `scale=10⁻²`; recovers both
+  within tight tolerances.
+- `test_heuristic_proposer_jitter_after_seed` — iter ≥ 1 differs
+  from iter 0; all proposals stay in bounds across 10 iters.
+- `test_bumps_restart_anchors_to_history_best` — given a 3-entry
+  history with iter-1 having the lowest χ²ᵣ, the next proposal
+  lands near iter-1's params, not the worse fits.
+- `test_bumps_restart_obeys_bounds` — anchor sitting on the upper
+  bound with 50% jitter, 100 proposals, all clamped.
+
+All 12 sandbox tests still green.
+
+**Baseline script wired up.** `scripts/run_baseline_eval.py` now
+sweeps four classical lanes (`random`, `latin_hypercube`,
+`bumps_restart`, `heuristic`) instead of two; smoke-imports clean.
+End-to-end execution is the next milestone (Phase-1 baseline locked).
+
 ---
 
 ## 2026-04-26
