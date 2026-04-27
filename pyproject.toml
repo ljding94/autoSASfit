@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "autosasfit"
+version = "0.0.1"
+description = "AI-assisted small-angle scattering fitting routine, wrapping SasView/bumps."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.24",
+    "matplotlib>=3.7",
+    "sasmodels",
+    "bumps",
+]
+
+[project.optional-dependencies]
+llm = [
+    "anthropic>=0.40",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]

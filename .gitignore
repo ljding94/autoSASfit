@@ -1,0 +1,54 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+build/
+dist/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# autoSASfit-specific:
+# Eval runs write per-iteration plots, CSVs, and summary files here. They
+# are large, regenerable from `scripts/run_baseline_eval.py`, and not
+# meant for the repo.
+outputs/
+
+# Cached LLM critiques (Phase 2). Keep their structure out of the repo;
+# we'll set this up under .cache/llm_critiques/ when wiring up LLMProposer.
+.cache/
+
+# Real experimental data (Phase 3+) goes in data/ and may be private; keep
+# the directory structure but ignore raw files. Override with !data/sample/
+# if you want a public sample to ship in the repo.
+data/raw/
+*.h5
+*.nxs
