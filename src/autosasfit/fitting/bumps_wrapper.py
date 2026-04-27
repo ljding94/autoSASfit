@@ -76,10 +76,20 @@ def fit_one(
     result = bumps_fit(problem, method=method, steps=max_evals, verbose=False)
 
     fit_params = {p: float(getattr(model, p).value) for p in spec.fit_params}
-    chi2_red = float(problem.chisq())  # bumps returns reduced chi^2 by convention
 
     # `experiment.theory()` returns I_model on the data's q grid.
     fit_curve = np.asarray(experiment.theory())
+
+    # Compute reduced χ² manually from residuals. bumps 1.0.2's
+    # `problem.chisq()` returns 0.0 in this configuration; `nllf()` is
+    # χ²/2 for Gaussian likelihood, but rather than depend on either
+    # convention we just compute it ourselves — this also matches the
+    # σ-normalized residuals shown in the canonical plot.
+    Iq_arr = np.asarray(Iq)
+    dIq_arr = np.where(np.asarray(dIq) > 0, np.asarray(dIq), np.nan)
+    chi2 = float(np.nansum(((Iq_arr - fit_curve) / dIq_arr) ** 2))
+    dof = max(1, len(Iq_arr) - len(spec.fit_params))
+    chi2_red = chi2 / dof
 
     # bumps' result object shape varies by method; do best-effort eval count.
     n_evals = int(getattr(result, "calls", 0)
