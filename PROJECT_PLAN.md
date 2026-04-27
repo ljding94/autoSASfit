@@ -1,70 +1,103 @@
-# autoSASfit — AI-Assisted Fitting Routine for SasView
+# autoSASfit — A Vision-LLM Benchmark for Small-Angle Scattering Judgment
 
-> Working draft. Goal of this document: capture the core idea, sketch an
-> architecture, and define a phased path from "toy synthetic example" to
-> "useful tool on real experimental data." Details are intentionally loose
-> and meant to be refined.
+> Working draft. Goal of this document: define the benchmark, its three
+> axes of capability, and the phased path from synthetic ground truth to
+> a cross-model leaderboard. Details are intentionally loose and meant
+> to be refined.
 
 ---
 
 ## 1. Motivation
 
-Fitting small-angle scattering (SAS) data is a partially-automated process. A
-non-linear least-squares optimizer (e.g. `bumps`, used by SasView) can refine
-parameters once it is started in a sensible region of parameter space, but
-two problems remain that humans currently solve by hand:
+Small-angle scattering (SAS) fitting is a paradigm scientific-figure
+task. A non-linear least-squares optimizer (`bumps`, used by SasView)
+will refine parameters once started in a sensible region, but two
+human-only judgments remain in the loop:
 
-1. **Initial guesses matter a lot.** SAS likelihood surfaces are non-convex
-   and full of local minima. A bad starting point is the difference between
-   a converged, physically meaningful fit and one that is numerically
-   optimal but physically wrong.
-2. **The "best" fit is not always the lowest-χ² fit.** A scattering curve
-   has *features* — Guinier knees, oscillations / form-factor minima,
-   power-law tails, structure-factor peaks — and a good fit captures those
-   features in the right Q range. A least-squares optimizer happily trades
-   a missed peak for a few thousand extra correctly-fit baseline points; a
-   human looks at the plot and says "no, the hump is in the wrong place."
+1. **Where to start.** SAS likelihood surfaces are non-convex; a bad
+   initial guess is the difference between a converged, physically
+   meaningful fit and a numerically optimal but physically wrong one.
+   A scientist looks at the curve and *proposes* a starting region in
+   one move.
+2. **What "good" means.** A scattering curve has *features* — Guinier
+   knees, form-factor oscillations, power-law tails, structure-factor
+   peaks. A least-squares optimizer happily trades a missed peak for a
+   thousand correctly-fit baseline points; a human looking at the plot
+   says "no, the bump is in the wrong place."
 
-The current human-in-the-loop workflow is:
+Prior art on automating these judgments splits two ways. **Classifier-
+style ML** (SCAN, Acta Cryst CNNs, JACS Au ANN+MCMC) trains once on a
+~10⁵-curve simulated database, predicts once, and hands off to an
+optimizer. **Classical global optimization** (`bumps` DE / multi-start
+/ DREAM) burns evals as a black box without ever looking at the curve.
+Neither approach makes iterative, plot-grounded judgments. Both report
+a single accuracy or χ² number; neither is asked the most important
+operational question, *do you know when you are wrong?*
 
-    pick a model -> guess parameters -> fit ->
-    look at the plot -> change guess (or change model) -> fit again -> ...
+Vision-LLMs (Claude Opus 4.7, GPT-5.4, Gemini 3.x) are the obvious
+candidate to fill that gap — they read scientific figures, reason
+iteratively, and produce structured output. Existing benchmarks
+(CharXiv, MMMU, MathVista) test chart reading on generic
+visualizations, not on a domain where a *physical model* defines
+ground truth and physically meaningful errors are distinct from
+numerical ones.
 
-This project replaces the **look at the plot** and **propose a new guess /
-model** steps with an AI agent that has access to (a) the plot, (b) the
-numerical residuals, and (c) prior knowledge of SAS models and what their
-features look like.
+**autoSASfit is a benchmark, not a fitting tool.** It probes vision-
+LLMs on three SAS-specific axes that no prior ML-for-SAS work measures
+jointly, using a fitting loop as the test instrument and synthetic
+SasView simulations as falsifiable ground truth. A by-product is an
+LLM-driven fitting workflow that may turn out to be useful at the
+beamline; the benchmark is the deliverable, the workflow is the
+side effect.
 
 ## 2. Scope
 
-**In scope (initially):**
+**In scope (the benchmark).**
 
-- Single 1D SAS curve, I(Q) vs Q.
-- Library of standard SasView models (sphere, cylinder, core-shell,
-  polymer excluded volume, power-law + Lorentzian, etc.) used both to
-  *generate* synthetic data and to *fit* it.
-- `bumps`-driven fitting (already installed via SasView) wrapped in a
-  programmatic API.
-- A loop that delegates the "look at the fit, propose a new guess"
-  decision to a vision-capable LLM.
+- Synthetic 1D I(Q) data generated from SasView models, with
+  controlled noise — ground truth is known by construction.
+- A swappable VLM critic (Claude / GPT / Gemini) plugged into a fixed
+  iteration harness via the `Proposer` interface.
+- Three measured axes, plus a baseline competency floor (§6):
+  - **A. Compositional model assembly** — can the VLM assemble
+    `P(Q)·S(Q)` or additive components on samples outside any pre-
+    trained classifier's vocabulary?
+  - **B. Calibrated self-assessment** — does the VLM's `accept` action
+    agree with the objective ground-truth criterion? Does its
+    qualitative confidence track actual fit quality?
+  - **C. Feature-grounded judgment** — when shown two fits where one
+    has lower χ² but the other captures Guinier / form-factor /
+    structure-factor features correctly, which does the VLM prefer?
+- Classical-baseline control lanes (`RandomProposer`,
+  `LatinHypercubeProposer`, `BumpsRestartProposer`,
+  `HeuristicProposer` for Guinier/Porod seeds) so each VLM's lift is
+  measured against a non-AI floor and the metrics are anchored.
+- A small experimental-data validation set (Phase 5) to test whether
+  benchmark scores transfer to the regime that matters.
 
-**Out of scope (for now):**
+**Out of scope.**
 
-- 2D detector data.
-- Simultaneous multi-dataset / multi-contrast fitting.
-- Building a GUI. CLI / notebook is enough until the loop works.
-- Replacing `bumps` itself. We are improving what is *fed* to bumps, not
-  re-implementing the optimizer.
+- 2D detector data and simultaneous multi-dataset / multi-contrast
+  fitting. Could become future axes; not part of v1.
+- Replacing `bumps`. The optimizer is fixed across all proposers —
+  what varies is the *judgment* layer wrapped around it.
+- Building a fitting GUI or end-user product.
+- Fine-tuning the VLMs. Zero-shot, prompt-only is the v1 setting;
+  fine-tuned variants can be added later as additional benchmark
+  entries on the same harness.
 
 ## 3. Core idea (one paragraph)
 
-Treat fitting as an outer loop around the existing optimizer. The outer
-loop is driven by a vision LLM that sees the same picture a human expert
-would (log-log I(Q), with data + current best fit + residuals), and that
-has been prompted with a small library of "what each SAS model looks
-like." On each iteration the LLM either (a) proposes a new initial guess
-for the current model, (b) proposes switching to a different model, or (c)
-declares the fit acceptable. The inner loop is plain `bumps` least-squares.
+A fitting loop is a *forcing function* for VLM judgment: at each
+iteration the model must look at a plot, commit to a structured
+proposal (refine / switch model / compose / accept / give up), and
+then live with the consequences when the next iteration shows what
+the optimizer did with that proposal. Synthetic data gives us ground
+truth; the harness records every decision; calibration and feature-
+capture become falsifiable per-iteration metrics. The fitting *tool*
+is a byproduct; the *measurement* is the deliverable — a comparable,
+reproducible scorecard for any vision-LLM on SAS-specific scientific
+judgment.
 
 ## 4. High-level architecture
 
@@ -83,7 +116,8 @@ declares the fit acceptable. The inner loop is plain `bumps` least-squares.
                                        ▼                       ▼
                           ┌──────────────────────────────────────────┐
                           │              Proposer                    │
-                          │  RandomProposer  |  LLMProposer          │
+                          │  Random | LH | BumpsRestart | Heuristic  │
+                          │  | LLM(Claude/GPT/Gemini) — swappable    │
                           │  history -> next init params (+ model?)  │
                           └────────────────────┬─────────────────────┘
                                                │
@@ -94,151 +128,169 @@ declares the fit acceptable. The inner loop is plain `bumps` least-squares.
 
 Components:
 
-- **`data/`** — synthetic I(Q) generator built on SasView models, plus a
-  loader for real experimental files (`.dat`, `.abs`, `.xml`, etc.).
-- **`models/`** — thin registry that maps a model name to its SasView
-  definition, default parameters, sensible bounds, and a one-line
-  natural-language description for the LLM prompt.
-- **`fitting/`** — wraps `bumps` so a single call is `(data, model,
-  init) -> (best_params, χ², covariance, fit_curve)`. No GUI dependencies.
-- **`viz/`** — renders the canonical plot the LLM sees: log-log I(Q) with
-  data, fit, and a residuals subplot. One PNG, deterministic styling.
-- **`agent/`** — the LLM-driven critic. Prompt templates, schema for the
-  LLM's structured output, and the parser that turns its reply back into
-  parameters / model choice. Implements the `Proposer` interface.
-- **`baseline/`** — the non-AI proposers we benchmark against:
-  `RandomProposer` (uniform within bounds), `LatinHypercubeProposer`
-  (space-filling), and a "single-shot bumps" reference. Same `Proposer`
-  interface as the LLM.
-- **`loop/`** — the outer controller. Generic over proposer.
-- **`eval/`** — the head-to-head harness. Generates a corpus of synthetic
-  problems, runs each proposer on each problem, records iterations and
-  fit quality, and emits a comparison report.
+- **`data/`** — synthetic I(Q) generator built on SasView models, plus
+  loaders for real experimental files (Phase 5).
+- **`models/`** — registry mapping a model name to its SasView
+  definition, default parameters, sensible bounds, and a one-line NL
+  description for the LLM prompt. Phase-3 extension: compositional
+  combinators (`A * B`, `A + B`).
+- **`fitting/`** — wraps `bumps` so the inner step is fixed across all
+  proposers: `(data, model, init) -> (best_params, χ², fit_curve,
+  n_evals)`. No GUI dependencies.
+- **`viz/`** — the canonical plot the LLM critic sees: log-log I(Q)
+  with data, fit, and a normalized-residuals subplot. One PNG,
+  deterministic styling, locked across VLMs to keep the input
+  identical.
+- **`proposer/`** — the swappable judgment layer. Classical control
+  lanes (`Random`, `LatinHypercube`, `BumpsRestart`, `Heuristic`) plus
+  `LLMProposer`, configured by VLM provider/model.
+- **`loop/`** — the outer controller, generic over proposer and over
+  acceptance criterion (different axes use different criteria; §6).
+- **`eval/`** — corpus generators for axes 0/A/B/C, the head-to-head
+  harness, and report writers that emit a single per-VLM scorecard.
 
-## 5. The Proposer abstraction (the thing being benchmarked)
+## 5. The Proposer abstraction (the unit of comparison)
 
-Both the AI critic and the random-restart baseline are *proposers*: things
-that, given the history of past attempts, produce the next initial guess
-for the inner optimizer.
+Both the classical baselines and the LLM critic are *proposers*:
+things that, given the history of past attempts, produce the next
+initial guess for the inner optimizer.
 
 ```python
 class Proposer(Protocol):
+    name: str
     def propose(
         self,
         problem: Problem,           # data, model, bounds
         history: list[Iteration],   # past (init, fit, chi2, plot)
-    ) -> Proposal:
-        ...
+    ) -> Proposal: ...
 
 @dataclass
 class Proposal:
-    action: Literal["refine", "switch_model", "accept", "give_up"]
+    action: Literal["refine", "switch_model", "compose", "accept", "give_up"]
     init_params: dict[str, float] | None
-    model: str | None      # only if switch_model
-    note: str = ""         # free-text rationale, for logs
+    model: str | None       # for switch_model / compose
+    composition: dict | None  # for compose: { "factors": [...], "combinator": "product"|"sum" }
+    note: str = ""          # free-text rationale, for logs
 ```
 
 Concrete implementations:
 
-- `RandomProposer` — sample uniformly from the per-parameter bounds in the
-  model registry. Never accepts; loops until `max_iters`. Always returns
-  `action="refine"`.
-- `LatinHypercubeProposer` — same idea but space-filling; for small
-  iteration budgets this should beat pure random.
-- `BumpsRestartProposer` — runs bumps with a random init and lets it
-  converge; the "naive multi-start" baseline used in practice today.
-- `LLMProposer` — packs the plot + history into a prompt, calls a vision
-  LLM, parses the structured reply.
+- `RandomProposer` — uniform within bounds. Always `refine`.
+- `LatinHypercubeProposer` — space-filling sampler.
+- `BumpsRestartProposer` — bumps random restart; matches what
+  practitioners do today.
+- `HeuristicProposer` — Guinier slope → Rg, Porod tail → scale, high-Q
+  median → background. The smartest non-AI seed; ensures the LLM has
+  to beat *informed* classical baselines, not just random.
+- `LLMProposer` — packs the plot + history into a prompt, calls a
+  vision-LLM provider, parses the structured reply.
 
-This abstraction is the key to apples-to-apples evaluation: the harness
-calls `proposer.propose(...)` once per outer iteration and counts the
-calls. A "free" critique (LLM says `accept` without proposing new params)
-still counts as one iteration — that is what the LLM is providing, after
-all.
+This abstraction is what makes apples-to-apples evaluation possible
+*both* across baselines vs. VLMs *and* across different VLMs. The
+harness calls `proposer.propose(...)` once per outer iteration and
+counts the call. Plugging in a new VLM is a config change; the
+harness, prompt, and corpus are held constant.
 
-## 6. Evaluation — the head-to-head harness
+## 6. Evaluation — three axes plus a competency floor
 
-This is the core experiment of the project. **Until we have numbers
-showing the LLM proposer wins on iteration count, we don't have a
-result.**
+This is the contribution. Each axis has its own corpus, its own
+acceptance criterion, and its own metric. The deliverable is a per-VLM
+scorecard with one number (or pair) per axis.
 
-### 6.1 The unit of cost: one "iteration"
+### 6.0 Axis 0 — basic competency
 
-One iteration = one call to `proposer.propose(...)` plus the inner bumps
-fit it triggers. Across all proposers this means the same thing: one new
-starting point, one bounded optimizer run. Wall-clock is *not* the metric
-— LLM calls are slow but cheap relative to a real experiment, and a
-random-restart baseline is fast but uninformative. **Iteration count is
-the apples-to-apples metric.**
+Inherited from the original V1 framing: synthetic in-distribution
+corpus, single SasView models from a fixed library, deliberately bad
+initial guesses. Metrics:
 
-We additionally log inner-optimizer function evals, so a proposer that
-hands bumps a basically-correct guess (so bumps converges in 5 evals) is
-distinguishable from one that hands it a bad guess in roughly the right
-basin (so bumps converges in 200 evals).
+- **Success rate** at `max_iters = 12` against the objective
+  acceptance criterion (parameter recovery + reduced-χ² threshold).
+- **Median iterations-to-accept** over successes.
 
-### 6.2 Acceptance criterion (when does a run "succeed"?)
+A VLM that loses to `RandomProposer` on Axis 0 is not worth running
+on A/B/C. Pass thresholds:
 
-Because we control the synthetic data, we have ground truth. A run is
-accepted when **all** of the following hold:
+- success rate > `BumpsRestartProposer` + 10pp;
+- median iters < `LatinHypercubeProposer`.
 
-- **Parameter recovery:** for each fitted parameter, `|p_fit - p_true| /
-  scale(p_true) < ε_p` (default `ε_p = 0.10`, i.e. 10% relative error;
-  scale uses the parameter's bound width for log-scale parameters).
-- **Reduced χ² near unity:** `χ²_red < τ` (default `τ = 2.0`). This
-  catches cases where a fit looks numerically OK but the residuals are
-  structured.
-- **Feature capture (Phase 2+):** Q is split into decades; in each decade
-  the mean residual is within ±2σ of the noise floor. Prevents a "lowest
-  χ² but missed the peak" win from counting.
+### 6.1 Axis A — compositional / out-of-distribution model assembly
 
-A run that exhausts `max_iters` (default 12) without acceptance is
-recorded as a *failure*.
+Corpus: synthetic problems whose true model is *not* a single library
+entry but a composition (`sphere * hardsphere`, `power_law +
+gaussian_peak`, `core_shell_sphere * stickyhardsphere`, …). A
+classifier-style baseline (XGBoost trained on single-model curves)
+structurally cannot win this axis.
 
-### 6.3 Metrics reported
+The VLM action space extends to `compose`, supplying both factors and
+their combinator (`product` for P·S, `sum` for additive components).
 
-Per (proposer, problem):
+Metric: **composition match rate** — fraction of problems where the
+proposed composition matches the true composition (factor set ×
+combinator), independent of parameter recovery. Reported alongside
+in-axis parameter-recovery rate, so we can distinguish "got the
+structure right but parameters wrong" from "got both right."
 
-- `iterations_to_accept` — int, or `inf` if failed.
-- `total_inner_evals` — sum of bumps function evaluations across
-  iterations.
-- `final_chi2_red` — reduced χ² of the best fit.
-- `param_recovery_rmse` — normalized RMSE on recovered parameters.
-- `accepted` — bool.
+### 6.2 Axis B — calibrated self-assessment
 
-Per proposer (aggregated over corpus):
+The VLM may emit `accept` whenever it judges the fit is good enough.
+The harness records both the VLM's `accept` and the objective
+ground-truth acceptance, independently. Two metrics:
 
-- Success rate.
-- Median and 90th-percentile iterations-to-accept (over successes).
-- Wins / ties / losses against baseline, head-to-head per problem.
+- **Reliability** — when the VLM says `accept`, what fraction
+  objectively pass? (Precision of the VLM's positive judgment.)
+- **Coverage** — of the runs that *would* eventually pass objectively
+  given the full iteration budget, what fraction did the VLM accept
+  early instead of churning?
 
-### 6.4 The synthetic corpus
+A perfect calibrator scores 1.0 on both. A model that accepts
+everything scores high on coverage but low on reliability; a model
+that never accepts scores high on reliability but zero on coverage.
+We report the (reliability, coverage) pair, not a single number, so
+the trade-off stays visible.
 
-A corpus is a list of `Problem` instances. Each problem is:
+### 6.3 Axis C — feature-grounded judgment
 
-- A model name (e.g. `"sphere"`).
-- True parameters (sampled within the registry's bounds).
-- A noise level.
-- A *bad initial guess* (sampled deliberately far from truth, so the
-  problem is non-trivial).
-- The fitted-parameter set (some params may be fixed).
+A pairwise-preference test. We construct synthetic pairs of fits for
+the same problem: fit A has lower χ² but a structured residual in one
+Q decade (e.g., misses the Guinier knee); fit B has higher χ² but
+clean per-decade residuals. Ground truth: B is the human-expert pick.
 
-Initial corpus size: 30 problems across 3 models (sphere, cylinder,
-power-law-plus-Lorentzian) — enough to see a signal, small enough to keep
-LLM-API costs sane. Expand as needed.
+The VLM is shown both plots (or a side-by-side composite) and asked
+which is better, with a free-text rationale. Metric: **agreement rate**
+with the expert-style ground truth. A baseline that picks by χ² always
+loses; a feature-aware critic should win. Bonus: the rationale is
+graded for whether it *names* the missed feature.
 
-### 6.5 The minimal V1 experiment
+This axis is the cleanest test of "does the VLM see the *features*,
+or just the global goodness-of-fit number?"
 
-The single comparison that, if it goes our way, justifies the rest of
-the project:
+### 6.4 Iteration cost (reported, not gated)
 
-> **For 30 synthetic problems with deliberately bad initial guesses, does
-> `LLMProposer` reach the acceptance criterion in fewer iterations than
-> `RandomProposer` (and `LatinHypercubeProposer`), with a higher success
-> rate at `max_iters = 12`?**
+Across all axes we still record `iterations_to_accept` and
+`total_inner_evals`. Cost is not the headline — capability is — but a
+model that solves Axis A in 8 iterations is preferred over one that
+solves it in 30, all else equal.
 
-If yes → we have a result, move on to model selection.
-If no → either the prompt is wrong, the plot encoding is wrong, or the
-hypothesis is wrong; debug in that order.
+### 6.5 The synthetic corpora
+
+Each axis ships with a small (~30-problem) corpus initially, designed
+to give a measurable signal at low VLM-API cost. Corpora are
+generated reproducibly from a seed; the seed is recorded with the
+report so any score can be re-derived. The Axis-0 corpus used for
+*development* is held separate from the one used for the *reported*
+score, to avoid prompt overfitting.
+
+### 6.6 The minimal V1 result
+
+> *We can produce a single per-VLM scorecard with five numbers — Axis
+> 0 (success rate, median iters), Axis A (composition match), Axis B
+> (reliability, coverage), Axis C (preference agreement) — for at
+> least two frontier VLMs, on a fixed synthetic corpus, with seeds and
+> a leaderboard format that another lab could reproduce.*
+
+If the scorecard separates the models meaningfully → we have a
+benchmark. If every model scores the same → the corpus is too easy or
+the metrics are not discriminating; refine.
 
 ## 7. Outer loop in detail
 
@@ -263,52 +315,52 @@ Each iteration:
 1. **Fit** with the current `(model, init_params)` via bumps. Bounded.
    Short eval budget per call (e.g. ≤ 200 function evals).
 2. **Render** the canonical plot.
-3. **Check acceptance** against §6.2 criteria.
+3. **Check acceptance** against the axis-appropriate criterion (§6).
 4. **Propose** — call `proposer.propose(...)`. Action ∈ {`refine`,
-   `switch_model`, `accept`, `give_up`}.
-5. Loop. Stop on `accept`, `give_up`, success per acceptance check, or
+   `switch_model`, `compose`, `accept`, `give_up`}.
+5. Loop. Stop on `accept`/`give_up`, success per the criterion, or
    `max_iters`.
 
-Note: the *acceptance check* is done by the harness, independent of the
-proposer's `accept` action. A proposer is allowed to say "accept" earlier
-than the criterion is met (the LLM may judge a fit good enough); that
-short-circuits the loop, but the harness still records whether the
-ground-truth criterion was met. So we can also measure "calibration" —
-how often does the LLM's `accept` agree with the objective acceptance?
+The harness's *objective* acceptance is recorded independently of the
+proposer's `accept` action — that is what makes Axis B (calibration)
+free-of-charge: we always know whether the VLM agreed with truth.
 
 ## 8. The critic prompt (sketch)
 
 The LLM is given:
 
-- A short *system* prompt: "You are an expert in small-angle scattering.
-  You will be shown a fit and asked to improve it. Prefer fits that
-  capture *features* (Guinier region, form-factor oscillations,
-  power-law slopes, structure-factor peaks) in the correct Q range,
-  even at the cost of a worse global χ²."
+- A short *system* prompt: "You are an expert in small-angle
+  scattering. You will be shown a fit and asked to improve it. Prefer
+  fits that capture *features* (Guinier region, form-factor
+  oscillations, power-law slopes, structure-factor peaks) in the
+  correct Q range, even at the cost of a worse global χ²."
 - A *model library* block: for each candidate model, one or two
-  sentences on what it looks like in log-log I(Q) and what its parameters
-  control.
-- The *current iteration*: PNG of the plot, the model name, the fitted
-  parameter values + bounds, and χ².
+  sentences on what it looks like in log-log I(Q) and what its
+  parameters control.
+- The *current iteration*: PNG of the plot, the model name, the
+  fitted parameter values + bounds, and χ².
 - A *history* block summarizing previous iterations (model tried,
   qualitative failure mode, χ²).
 
 Reply schema (`agent/schema.py`):
 
     {
-      "action": "refine" | "switch_model" | "accept" | "give_up",
+      "action": "refine" | "switch_model" | "compose" | "accept" | "give_up",
       "model":  "<model name, only if switch_model>",
+      "composition": { "factors": [...], "combinator": "product" | "sum" },
       "params": { "<name>": <value>, ... },
       "diagnosis": "free-text, one paragraph, why I'm doing this"
     }
 
-The diagnosis is for our logs, not for control flow — but it is the
-single most useful thing for debugging the agent later.
+The diagnosis is for our logs *and* for Axis-C scoring (does the
+diagnosis name the actual feature mismatch?). The prompt body is
+**held constant across VLM providers** to keep comparisons fair —
+locked after Phase 2 prompt-engineering on Claude.
 
 ## 9. Phasing
 
 ### Phase 0 — plumbing (no AI, no eval)
-- `fitting/` around bumps. Verify a known synthetic sphere can be
+- `fitting/` around bumps; verify a known synthetic sphere can be
   recovered from a clean-init fit.
 - `viz/` — one canonical plot style, saved to PNG.
 - `data/synthetic.py` for sphere, cylinder, polymer, power-law +
@@ -316,60 +368,80 @@ single most useful thing for debugging the agent later.
 - **Exit criterion:** end-to-end "generate → fit → plot" works from a
   script.
 
-### Phase 1 — evaluation harness with baselines only
+### Phase 1 — classical control lanes
 - Implement the `Proposer` abstraction.
 - Implement `RandomProposer`, `LatinHypercubeProposer`,
-  `BumpsRestartProposer`.
-- Build the corpus generator + harness + metrics + report.
-- Run baselines on the corpus, record numbers.
-- **Exit criterion:** we can produce a CSV / markdown table of "iters to
-  accept" for the baselines, on the corpus.
+  `BumpsRestartProposer`, `HeuristicProposer` (Guinier/Porod seeds).
+- Build the corpus generator + harness + metrics + report writers.
+- Run all four classical lanes on the Axis-0 corpus.
+- **Exit criterion:** a CSV / markdown table of "iters to accept" and
+  success rate for the four classical lanes — this is the non-AI
+  floor every VLM has to clear.
 
-### Phase 2 — LLM proposer + head-to-head
-- Implement `LLMProposer`. Wire prompt templates, output schema parser,
-  vision-API client. Cache critiques by plot hash to keep cost down.
-- Run the same harness on the same corpus.
-- **Exit criterion (V1 result):** `LLMProposer` beats baselines on
-  median iterations-to-accept and on success rate, on this corpus.
+### Phase 2 — Axis 0 + Axis B for one VLM
+- Implement `LLMProposer` against Claude (Opus 4.7 or Sonnet 4.6 — pick
+  by cost/latency, not by capability). Wire prompt templates, output
+  schema, vision-API client. Cache critiques by `(plot_hash,
+  history_hash, model, vlm_id)`.
+- Run Axis 0 (basic competency) and Axis B (calibration). Both reuse
+  the Phase-1 corpus, so no new corpus generator is needed yet.
+- **Exit criterion:** scorecard rows for Axis 0 and Axis B, with
+  bootstrap confidence intervals.
 
-### Phase 3 — model selection
-- Expand the corpus so the *true* model is unknown to the loop. Loop
-  starts on the wrong model; LLM may propose `switch_model`.
-- **Exit criterion:** loop picks the correct model on ≥ 80% of synthetic
-  test cases.
+### Phase 3 — Axis A and Axis C
+- Build the compositional corpus generator (Axis A: P·S and additive
+  combinations) and the pairwise feature-preference corpus (Axis C).
+- Extend the `Proposer` interface with the `compose` action.
+- **Exit criterion:** all four scorecard columns populated for one VLM.
 
-### Phase 4 — real data
-- Lijie supplies experimental data. No ground truth, so the acceptance
-  criterion becomes "expert says it's reasonable" or "agrees with the
-  published interpretation."
-- Add a "human-in-the-loop override" so we can correct the agent and
-  use those corrections later as eval data / few-shot examples.
+### Phase 4 — second VLM and leaderboard
+- Add a second model (likely GPT-5.x or Gemini 3.x) behind the same
+  `LLMProposer` interface; only the API client differs.
+- Re-run the full corpus; the prompt is locked from Phase 2.
+- **Exit criterion:** a two-column leaderboard. If columns differ
+  meaningfully, the benchmark is discriminating. If not, either the
+  corpus is too easy or the metrics aren't sharp — debug in that
+  order.
 
-### Phase 5 — beyond
-- Multi-model averaging, uncertainty calibration, active suggestion of
-  next experiment. Not worth designing now.
+### Phase 5 — real-data validation
+- Lijie supplies experimental data. No ground-truth parameters, but:
+  - **Calibration transfer**: does Axis B reliability hold on real
+    data when "objective acceptance" is replaced by "expert
+    agreement"?
+  - **Generalization gap**: how much does each VLM's score degrade
+    from synthetic to real?
+- This is what justifies the benchmark to people who don't trust
+  synthetic results.
+- **Exit criterion:** a transfer-gap number per VLM per axis.
+
+### Phase 6 — beyond
+Open the leaderboard to community submissions; cover 2D and multi-
+contrast as additional axes; consider fine-tuned variants as separate
+benchmark entries. Out of scope for now.
 
 ## 10. Open questions (to revisit)
 
-- **Plot encoding.** Just a PNG? Or PNG + a small text summary of the
-  residuals binned by Q decade? The latter is cheap and might
-  dramatically improve the agent's reasoning about *where* the fit is
-  bad. Probably worth A/B-ing in Phase 2.
-- **How "model-aware" does the prompt need to be?** Two-sentence
-  description per model, vs a small gallery of reference plots.
-  Empirical question.
-- **Bounds.** Per-model defaults in the registry. The LLM only sets the
-  *initial point* inside them, never the bounds.
-- **Calibration of LLM `accept`.** Does the LLM's "this looks good" agree
-  with the objective acceptance criterion? If it routinely accepts bad
-  fits, we don't trust it on real data. The harness records both, so we
-  can measure this for free.
-- **Cost / caching.** Cache critiques keyed on `(plot_hash, history_hash,
-  model)` so re-running the corpus during development doesn't burn
-  tokens.
-- **Noise model.** Real SAS data uses Poisson-like errors with a roughly
-  constant relative floor; synthetic data should mimic this, not pure
-  Gaussian. A subtle but important detail for transferring to real data.
+- **Plot encoding.** PNG only, vs PNG + per-decade residual summary in
+  the prompt. A/B in Phase 2 — and the *better* encoding becomes the
+  standardized benchmark input across all VLMs.
+- **Prompt fairness across providers.** Each VLM is sensitive to
+  prompt details. Plan: tune the prompt only against Claude in Phase
+  2, lock it, and evaluate other models on the locked prompt. Document
+  this so reproducibility doesn't depend on prompt tweaks.
+- **Cost / caching.** Cache critiques keyed on `(plot_hash,
+  history_hash, model_name, vlm_id)` so re-running the corpus during
+  development doesn't burn tokens.
+- **Noise model.** Real SAS data has Poisson-like errors with a
+  roughly constant relative floor; synthetic data must mimic this,
+  not pure Gaussian, otherwise Phase-5 transfer numbers are
+  misleading.
+- **Dev/test split.** The Axis-0 corpus used to debug the harness is
+  *not* the corpus used for the reported number. Hold out a second
+  seed for the report, lock it, never iterate against it.
+- **Calibration of Axis B against humans.** For real data, "objective
+  acceptance" becomes "expert agreement," which is itself noisy.
+  Phase 5 should collect at least two expert opinions per sample so
+  the human ceiling is calibrated.
 
 ## 11. Repo layout (current)
 
@@ -380,6 +452,7 @@ single most useful thing for debugging the agent later.
     │   ├── __init__.py
     │   ├── data/
     │   │   ├── __init__.py
+    │   │   ├── loader.py
     │   │   └── synthetic.py
     │   ├── models/
     │   │   ├── __init__.py
@@ -392,10 +465,10 @@ single most useful thing for debugging the agent later.
     │   │   └── plots.py
     │   ├── proposer/
     │   │   ├── __init__.py
-    │   │   ├── base.py          ← Proposer Protocol, Proposal, Iteration
-    │   │   ├── random.py        ← RandomProposer, LatinHypercubeProposer
-    │   │   ├── bumps_restart.py ← BumpsRestartProposer
-    │   │   └── llm.py           ← LLMProposer (Phase 2)
+    │   │   ├── base.py             ← Proposer Protocol, Proposal, Iteration
+    │   │   ├── random_proposer.py  ← RandomProposer (LH planned)
+    │   │   ├── llm.py              ← LLMProposer (Phase 2 stub)
+    │   │   └── heuristic.py        ← (planned) Guinier/Porod seed
     │   ├── loop/
     │   │   ├── __init__.py
     │   │   └── controller.py
@@ -403,11 +476,11 @@ single most useful thing for debugging the agent later.
     │       ├── __init__.py
     │       ├── corpus.py        ← Problem generator
     │       ├── harness.py       ← run_one, run_corpus
-    │       └── report.py        ← summary tables
+    │       └── report.py        ← scorecard tables
     ├── scripts/
     │   ├── quickstart.py        ← end-to-end demo (Phase 0)
-    │   └── run_baseline_eval.py ← runs the baseline corpus (Phase 1)
-    ├── notebooks/
+    │   └── run_baseline_eval.py ← classical lanes (Phase 1)
+    ├── references/              ← curated docs + prior-art notes
     └── tests/
 
 ## 12. Immediate next steps
@@ -416,12 +489,18 @@ single most useful thing for debugging the agent later.
    `import bumps`).
 2. Wire up `data/synthetic.py`, `models/registry.py`,
    `fitting/bumps_wrapper.py`, `viz/plots.py` (Phase 0).
-3. Run `scripts/quickstart.py`: generate a sphere → fit it from a clean
-   init → save plot. Sanity check.
-4. Build the `Proposer` abstraction + `RandomProposer` + harness +
-   metrics. Run on a tiny 5-problem corpus.
-5. Wire up `LLMProposer`. Re-run the corpus. Compare numbers.
+3. Run `scripts/quickstart.py`: generate a sphere → fit it from a
+   clean init → save plot. Sanity check.
+4. Add `HeuristicProposer` (Guinier slope → Rg, Porod tail → scale,
+   high-Q median → background). The non-AI floor should be informed,
+   not random.
+5. Build the `Proposer` abstraction + classical lanes + harness +
+   metrics. Run on a tiny 5-problem Axis-0 corpus.
+6. Wire up `LLMProposer` against Claude. Run Axis 0 + Axis B. First
+   scorecard row.
+7. Build the compositional and pairwise-preference corpora; add a
+   second VLM. First leaderboard.
 
-Steps 1–4 are entirely orthogonal to the AI part and de-risk it: if any
-of them is harder than expected, we want to know before we start
+Steps 1–5 are entirely orthogonal to the AI part and de-risk it: if
+any of them is harder than expected, we want to know before we start
 spending tokens on critique calls.

@@ -56,44 +56,45 @@ Representative work:
 This isn't directly competitive with autoSASfit but it is the
 state-of-the-art for *biological* SANS analysis pipelines.
 
-## Where autoSASfit differs
+## What autoSASfit measures that prior ML-for-SAS does not
 
-The lineage above is overwhelmingly **classifier-style**: train once,
-infer once, hand off to a traditional optimizer. The user is out of the
-loop, and the model has no ability to reason iteratively about *why*
-its first answer was wrong.
+The lineage above is overwhelmingly **classifier-style**: train once
+on a simulated I(Q) database, infer once, hand off to a traditional
+optimizer. Each paper reports a single accuracy number on its own
+in-distribution corpus. Three operationally important capabilities are
+not measured anywhere in this lineage:
 
-autoSASfit instead frames the agent as a **critic in a feedback loop**:
-
-| dimension | prior ML-for-SAS | autoSASfit |
+| capability | prior ML-for-SAS | autoSASfit benchmark |
 |---|---|---|
-| input | raw I(Q) array | rendered fit *plot* (data + fit + residuals) |
-| output | one-shot model + params | iterative proposals (refine / switch / accept) |
-| training | needs a ~10⁵-curve simulated database | zero-shot (uses general vision-LLM) |
-| reasoning | implicit, in network weights | explicit, free-text "diagnosis" per iter |
-| coverage | bounded by training set | bounded by what the LLM knows (broader, fuzzier) |
+| in-distribution model ID | reported (e.g. SCAN: 95–97% accuracy) | Axis 0 (basic competency floor) |
+| compositional / OOD assembly (`P·S`, sums) | not measured (fixed library) | **Axis A** |
+| calibrated self-assessment ("do you know when you're wrong?") | not measured | **Axis B** (reliability + coverage) |
+| feature-grounded preference (low-χ² but missed knee → still wrong) | not measured | **Axis C** (pairwise) |
+| iterative judgment under feedback | not measured (one-shot inference) | reported across all axes |
+| reproducibility across model providers | n/a (one trained model per paper) | core: same harness, swappable VLM |
 
-The bet: a general-purpose vision LLM, with a small SAS-specific prompt,
-can play the human-expert role in the loop *without* needing a custom
-trained classifier per beamline / per sample family. The cost is that
-each iteration is an API call, not a forward pass — which is why our
-eval metric is iterations, not wall-clock.
+autoSASfit reframes prior classifier-style work as a **baseline
+regime** — one-shot, in-distribution, χ²-grounded — and asks vision-
+LLMs to perform on the three axes that regime structurally cannot
+address. A trained CNN may well beat any VLM on Axis 0
+in-distribution accuracy; that is a feature of the benchmark, not a
+weakness, because it locates each method on a capability map.
 
 ## Relevance to autoSASfit
 
-- The prior CNN-classifiers are a **strong Phase-2 baseline** worth
-  adding alongside RandomProposer / LatinHypercubeProposer. Even if we
-  can't reproduce SCAN exactly, training a small XGBoost on synthetic
-  I(Q) is a 1-day project and gives us a "trained-classifier" baseline
-  for the head-to-head.
+- The prior CNN-classifiers are a **legitimate benchmark entry**, not
+  just a baseline to beat. Training a small XGBoost on synthetic I(Q)
+  and registering it as a `ClassifierProposer` slots it into the same
+  scorecard alongside the VLMs — and the comparison is *informative*,
+  not adversarial: a CNN should win Axis 0 and lose Axis A, exposing
+  the regime each method covers.
 - Their simulated databases are a natural training corpus; we can
   borrow the *idea* (sample model + params over realistic ranges) for
-  our `eval/corpus.py`.
+  our `eval/corpus.py` and for any classifier-style entry we add.
 - **TODO:** read the SCAN paper end-to-end. Specifically, what
-  parameter ranges do they sample? What noise model? Their corpus
-  generation choices probably need to match ours for the comparison
-  to be fair.
+  parameter ranges do they sample? What noise model? Matching their
+  corpus generation makes our Axis-0 comparison fair.
 - **TODO:** the JACS Au "ANN + MCMC" paper is the closest
   philosophical neighbor — fast point estimate + slow uncertainty
-  quantification. Our Phase 4 idea ("DREAM after the LLM critic
-  finishes") is the same shape.
+  quantification. Calibration (their MCMC step) is what our Axis B
+  measures directly without requiring posterior sampling.
