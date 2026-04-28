@@ -77,6 +77,27 @@ REGISTRY: dict[str, ModelSpec] = {
         },
         log_scale_params={"scale", "background"},
     ),
+    "lamellar": ModelSpec(
+        name="lamellar",
+        description=(
+            "Infinite single bilayer / sheet form factor. Plateau at very "
+            "low Q, then a Q^-2 Porod-like tail with periodic minima at "
+            "Q = 2*pi*n / thickness (n = 1, 2, 3, ...). The minima carry "
+            "the layer thickness — the length scale a Guinier-only "
+            "heuristic cannot read off."
+        ),
+        fit_params=["scale", "thickness", "background"],
+        bounds={
+            "scale":      (1e-3, 1e1),
+            "thickness":  (20.0, 300.0),    # angstroms
+            "background": (1e-4, 1.0),
+        },
+        # Realistic lipid-bilayer-like contrast (head-group vs water) —
+        # bigger Δρ than the default so the form factor sits well above
+        # the noise floor at our usual 3% rel_noise.
+        fixed_params={"sld": 1.0, "sld_solvent": 6.0},
+        log_scale_params={"scale", "background"},
+    ),
 }
 
 

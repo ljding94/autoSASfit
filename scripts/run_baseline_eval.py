@@ -31,9 +31,14 @@ def main() -> None:
     out_root = Path("outputs/baseline_eval")
     out_root.mkdir(parents=True, exist_ok=True)
 
-    # Small corpus to start; bump n_per_model once everything is wired up.
+    # Four-model corpus. Sphere and power_law are the easy controls;
+    # cylinder (4 fit params, two length scales) and lamellar (Bragg-like
+    # minima at Q = 2π·n/thickness) are the harder cases that should
+    # spread the lanes apart. HeuristicProposer falls back to bounds-uniform
+    # on lamellar by design — the benchmark wants to surface where the
+    # informed heuristic does and doesn't have signal.
     corpus = generate_corpus(
-        models=["sphere", "power_law"],
+        models=["sphere", "power_law", "cylinder", "lamellar"],
         n_per_model=5,
         seed=0,
     )
