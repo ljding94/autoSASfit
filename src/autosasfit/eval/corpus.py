@@ -3,6 +3,28 @@
 Each problem is a (model, true_params, bad_init_guess, q, Iq, dIq) tuple.
 True params are sampled within the registry bounds, the bad-init guess is
 deliberately drawn far from truth so the problem is non-trivial.
+
+Dev / reported seed split (PROJECT_PLAN.md §6.5)
+------------------------------------------------
+
+To avoid prompt overfitting, the Axis-0 corpus used for *development*
+(iterating on the LLM critic prompt, debugging the harness, locking the
+classical baselines) must be held separate from the one used for the
+*reported* score. The convention is one constant per role, documented
+here and imported by name at every call site:
+
+- ``DEV_SEED = 0`` — used by ``scripts/run_baseline_eval.py`` and
+  during prompt iteration. Touch freely. Preserves continuity with the
+  Phase-1 baseline numbers locked on 2026-04-27 / 2026-04-28.
+- ``REPORTED_SEED = 20260428`` — date-stamped on the day the gate was
+  closed. Run *only* when locking a number for a publishable scorecard
+  row; never iterate prompts against it. The seed value is recorded
+  alongside any score that uses it.
+
+The two seeds produce disjoint corpora (different true-param draws,
+different bad-init draws, different noise realizations). Phase-2+
+proposers should be built and tuned on the dev seed, then run *once*
+on the reported seed for the published number.
 """
 from __future__ import annotations
 
@@ -12,6 +34,13 @@ import numpy as np
 from ..data.synthetic import generate
 from ..models.registry import REGISTRY
 from ..proposer.base import Problem
+
+
+# Dev / reported seed split — see module docstring above and
+# PROJECT_PLAN.md §6.5 for the rationale. Always import these by name
+# rather than passing a literal seed; the constants are the convention.
+DEV_SEED: int = 0
+REPORTED_SEED: int = 20260428
 
 
 def _sample_param(rng: np.random.Generator, lo: float, hi: float,
@@ -47,7 +76,7 @@ def generate_corpus(
     n_per_model: int,
     *,
     rel_noise: float = 0.03,
-    seed: int = 0,
+    seed: int = DEV_SEED,
 ) -> list[Problem]:
     rng = np.random.default_rng(seed)
     problems: list[Problem] = []

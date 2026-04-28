@@ -289,6 +289,19 @@ report so any score can be re-derived. The Axis-0 corpus used for
 *development* is held separate from the one used for the *reported*
 score, to avoid prompt overfitting.
 
+**Locked Axis-0 seeds** (closed 2026-04-28, gate 4):
+
+- `DEV_SEED = 0` — used during prompt iteration, harness debugging,
+  and classical baseline runs. Free to touch.
+- `REPORTED_SEED = 20260428` — date-stamped lock; run *only* when
+  freezing a published scorecard row. Never iterate prompts against
+  it.
+
+Both are exported by name from `src/autosasfit/eval/corpus.py`;
+import the constants rather than passing literals at call sites.
+Phase 2 / 3 axes (A, B, C) will get their own dev/reported pair when
+they ship.
+
 ### 6.6 The minimal V1 result
 
 > *We can produce a single per-VLM scorecard with five numbers — Axis

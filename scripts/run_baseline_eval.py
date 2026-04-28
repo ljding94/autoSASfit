@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from autosasfit.eval.corpus import generate_corpus
+from autosasfit.eval.corpus import DEV_SEED, generate_corpus
 from autosasfit.eval.harness import run_corpus
 from autosasfit.eval.report import write_csv, write_markdown
 from autosasfit.proposer.heuristic import HeuristicProposer
@@ -37,10 +37,14 @@ def main() -> None:
     # spread the lanes apart. HeuristicProposer falls back to bounds-uniform
     # on lamellar by design — the benchmark wants to surface where the
     # informed heuristic does and doesn't have signal.
+    #
+    # DEV_SEED is the iteration corpus per PROJECT_PLAN.md §6.5; the
+    # reported scorecard runs against REPORTED_SEED (separate script,
+    # added when Phase-2 LLMProposer is ready to lock its first row).
     corpus = generate_corpus(
         models=["sphere", "power_law", "cylinder", "lamellar"],
         n_per_model=5,
-        seed=0,
+        seed=DEV_SEED,
     )
     print(f"generated corpus: {len(corpus)} problems")
 

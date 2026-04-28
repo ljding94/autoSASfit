@@ -25,7 +25,7 @@ write-ups for each landed-gate live in the dated entries below.
 | 1 | **Phase-0 reality check** — sphere fit end-to-end through real `sasmodels`+`bumps` | ✅ 2026-04-27 | radius recovered 60 → 59.996 Å, χ²ᵣ=0.779; `outputs/quickstart_fit.png` |
 | 2 | **Informed non-AI floor** — `HeuristicProposer` (Guinier/Porod) + `BumpsRestartProposer` (history-best anchor) | ✅ 2026-04-27 | commit [`1320c20`](https://github.com/ljding94/autoSASfit/commit/1320c20); 12/12 sandbox tests green |
 | 3 | **Phase-1 baseline locked** — four classical lanes on 20-problem corpus (4 models) | ✅ 2026-04-28 | random 65% / LH 70% / bumps 50% / heuristic 60%; per-model stratification is the real story (cylinder hardest, lamellar surprisingly easy for uninformed lanes — see 2026-04-28 entry) |
-| 4 | **Held-out Axis-0 seed frozen** — `dev` seed for prompt iteration vs `reported` seed (untouched until final number) | ⏳ pending | not yet split in `eval/corpus.py` |
+| 4 | **Held-out Axis-0 seed frozen** — `dev` seed for prompt iteration vs `reported` seed (untouched until final number) | ✅ 2026-04-28 | `DEV_SEED=0` / `REPORTED_SEED=20260428` named in `eval/corpus.py`; sanity-checked disjoint (dev sphere r₀=142.20 Å, reported r₀=18.33 Å); 12/12 sandbox tests green |
 | 5 | **First scorecard row** — `LLMProposer` against Claude on Axis 0 + Axis B, with critique cache | ⏳ pending | `proposer/llm.py` is a stub |
 
 Meta-changes shipped alongside the gates:
@@ -167,6 +167,47 @@ Writes `outputs/baseline_eval/{random,latin_hypercube,bumps_restart,heuristic}.c
 plus `summary.md` and per-iteration plots under
 `plots/{lane}/{problem}/iter_NN.png`. Outputs are gitignored;
 regenerable from the seed.
+
+### Gate 4 — held-out seed split landed
+
+Closed the dev/reported corpus split per PROJECT_PLAN.md §6.5 before
+starting Phase 2. Cheap protective change: every Phase-2 number we
+report is now guaranteed to come from a corpus the prompt has not
+been iterated against.
+
+**Implementation** (`src/autosasfit/eval/corpus.py`):
+
+- `DEV_SEED = 0` — used by `scripts/run_baseline_eval.py` and during
+  prompt iteration. Preserves continuity with the Phase-1 baseline
+  numbers locked on 2026-04-27 / 2026-04-28.
+- `REPORTED_SEED = 20260428` — date-stamped on the day the gate
+  closed. Run *only* when locking a number for a publishable
+  scorecard row; never iterate prompts against it. Recorded
+  alongside any score that uses it.
+- `generate_corpus(...)` now defaults `seed=DEV_SEED` (was a magic
+  `0`). `scripts/run_baseline_eval.py` imports `DEV_SEED` and passes
+  it explicitly so the dev/reported intent is visible at the call
+  site.
+- Module docstring documents the convention so any new caller has the
+  rule in front of them.
+
+**Sanity checks before commit:**
+
+| check | result |
+|---|---|
+| reported seed generates a valid corpus | ✅ 2 sphere problems built without error |
+| dev vs reported produce disjoint draws | ✅ dev sphere r₀=142.20 Å, reported r₀=18.33 Å |
+| sandbox tests still pass | ✅ 12/12 green |
+| `run_baseline_eval.py` still produces the locked Phase-1 numbers | ✅ unchanged — `DEV_SEED == 0` so the run is byte-identical |
+
+**Not done as part of this gate** (deferred — none block Phase 2
+*starting*, but block Phase 2 *completing*):
+
+- A `run_reported_eval.py` script that runs the reported-seed corpus
+  end-to-end. Will land alongside the first `LLMProposer` scorecard
+  row, not before — there's no number to lock yet.
+- The same dev/reported convention extended to Axis A/B/C corpora
+  (Phase 3+). The constants here are Axis-0-specific by intent.
 
 ### Heuristic fallback bug (filed, not yet fixed)
 
