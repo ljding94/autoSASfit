@@ -24,7 +24,7 @@ write-ups for each landed-gate live in the dated entries below.
 |---|---|---|---|
 | 1 | **Phase-0 reality check** — sphere fit end-to-end through real `sasmodels`+`bumps` | ✅ 2026-04-27 | radius recovered 60 → 59.996 Å, χ²ᵣ=0.779; `outputs/quickstart_fit.png` |
 | 2 | **Informed non-AI floor** — `HeuristicProposer` (Guinier/Porod) + `BumpsRestartProposer` (history-best anchor) | ✅ 2026-04-27 | commit [`1320c20`](https://github.com/ljding94/autoSASfit/commit/1320c20); 12/12 sandbox tests green |
-| 3 | **Phase-1 baseline locked** — run all four classical lanes; commit numbers as the non-AI floor every VLM must beat | ⏳ next | `scripts/run_baseline_eval.py` ready, not yet executed |
+| 3 | **Phase-1 baseline locked** — four classical lanes on 10-problem corpus | ✅ 2026-04-27 | random 60% / LH 70% / bumps 50% / heuristic 70%; clean per-problem stratification (see entry below) |
 | 4 | **Held-out Axis-0 seed frozen** — `dev` seed for prompt iteration vs `reported` seed (untouched until final number) | ⏳ pending | not yet split in `eval/corpus.py` |
 | 5 | **First scorecard row** — `LLMProposer` against Claude on Axis 0 + Axis B, with critique cache | ⏳ pending | `proposer/llm.py` is a stub |
 
@@ -254,6 +254,96 @@ All 12 sandbox tests still green.
 sweeps four classical lanes (`random`, `latin_hypercube`,
 `bumps_restart`, `heuristic`) instead of two; smoke-imports clean.
 End-to-end execution is the next milestone (Phase-1 baseline locked).
+
+### Milestone 3 — Phase-1 baseline locked
+
+Ran `scripts/run_baseline_eval.py` end-to-end (~54 s wall, single
+core). Corpus: 10 problems (5 sphere + 5 power_law), seed=0,
+deliberately-bad inits, max 12 outer iterations per problem,
+acceptance = 10% relative parameter recovery + reduced χ² < 2.0.
+
+#### Headline numbers
+
+| proposer | n | success rate | median iters | p90 iters |
+|---|---:|---:|---:|---:|
+| random | 10 | 60% | 2.0 | 3.0 |
+| latin_hypercube | 10 | 70% | 2.0 | 6.4 |
+| bumps_restart | 10 | 50% | 1.0 | 3.6 |
+| heuristic | 10 | 70% | 2.0 | 2.0 |
+
+These are the **locked non-AI floor** for Phase 2+. Any VLM has to
+clear them on the same corpus to claim lift. With n=10, sampling
+noise is ~15 pp — read the rates as "all four are in the same
+ballpark," not as "LH and heuristic tied at 70%." The interesting
+structure is below the headline.
+
+#### What the per-problem CSVs reveal
+
+The flat headline rates obscure two stratifications visible only in
+the per-problem rows.
+
+**1. Heuristic dominates on the hard sphere cases.** Both `sphere_00`
+(failed by random and bumps_restart with χ²ᵣ ≈ 977 — wrong basin,
+radius ~3× too large) and `sphere_04` (failed by bumps_restart with
+χ²ᵣ ≈ 4720) are solved by HeuristicProposer in 2 iters. The
+heuristic seed lands the LM optimizer in the right basin from iter
+0; uninformed lanes can spend 12 iters in the wrong basin.
+
+The "median iters" metric obscures this because successful runs
+across all lanes are uniformly fast (1–4 iters); the *failures*
+become "13" (max+1), so per-lane medians mostly reflect the
+typical successful iter count, not the discriminating cases. The
+right metric for showing heuristic lift is **success rate among
+problems where any lane fails** — heuristic 100% (2/2 hard sphere
+cases), random/bumps 0% on the same two.
+
+**2. Power-law parameter degeneracy: all four lanes fail
+identically on 3/5 power_law problems.** `power_law_02`, `_03`,
+`_04` end with χ²ᵣ ≈ 1 (statistically perfect fits) but parameter
+RMSE 0.57, 5.0, 5042. The fits are *visually* clean — see
+`outputs/baseline_eval/plots/heuristic/power_law_03/iter_11.png`:
+8 decades of perfect log-log line, residuals scatter ±2σ.
+Parameters are still wrong because (scale, power, background) trade
+off across each other when the data is a featureless power law and
+the optimizer hits a non-truth (scale, power, bg) combination that
+fits the σ-band equally well. All four lanes converge to the same
+wrong basin to ≥4 decimal places — this is a property of the
+*corpus*, not the proposers.
+
+This is the **canonical Axis C failure mode**: low χ², wrong
+parameters, no feature mismatch in the residuals. A χ²-only critic
+(human or VLM) would accept these. A feature-grounded critic
+should notice that the data spans 8 decades cleanly and infer that
+the fit's recovered `power` is set by the data slope, then check
+whether the recovered `scale` makes sense — but a chi²-only loop
+has no leverage. **Useful finding for Phase 3 design.**
+
+#### What this baseline does and doesn't claim
+
+- **Does claim:** with the current corpus, max_iters=12, eps_p=10%,
+  χ²ᵣ_max=2, an LLM proposer needs to clear ~70% success rate to
+  match the informed classical floor on Axis 0. A "lift" claim
+  would require either >75% (statistically clear of the 70% floor
+  given n=10 noise) or a larger corpus.
+- **Does not claim:** that the rate ordering (heuristic ≈ LH > random
+  > bumps_restart) is statistically meaningful. With n=10 each lane
+  is one sphere_00 outcome away from a different ranking.
+- **Caveat for milestone 4:** the corpus seed (0) used here is the
+  *dev* seed. Before reporting a final number, generate and lock a
+  separate *reported* seed (per `PROJECT_PLAN.md` §6.5) and re-run.
+
+#### Reproducing
+
+```bash
+python3 scripts/run_baseline_eval.py
+```
+
+Writes `outputs/baseline_eval/{random,latin_hypercube,bumps_restart,heuristic}.csv`
+plus `summary.md` and `plots/{lane}/{problem}/iter_NN.png` for every
+iteration. All under `outputs/` (gitignored, regenerable from the
+seed). The CSVs are the source of truth for the per-problem
+analysis above; the summary table is reproduced verbatim from
+`outputs/baseline_eval/summary.md`.
 
 ---
 
