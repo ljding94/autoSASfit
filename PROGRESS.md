@@ -24,7 +24,7 @@ write-ups for each landed-gate live in the dated entries below.
 |---|---|---|---|
 | 1 | **Phase-0 reality check** — sphere fit end-to-end through real `sasmodels`+`bumps` | ✅ 2026-04-27 | radius recovered 60 → 59.996 Å, χ²ᵣ=0.779; `outputs/quickstart_fit.png` |
 | 2 | **Informed non-AI floor** — `HeuristicProposer` (Guinier/Porod) + `BumpsRestartProposer` (history-best anchor) | ✅ 2026-04-27 | commit [`1320c20`](https://github.com/ljding94/autoSASfit/commit/1320c20); 12/12 sandbox tests green |
-| 3 | **Phase-1 baseline locked** — four classical lanes on 10-problem corpus | ✅ 2026-04-27 | random 60% / LH 70% / bumps 50% / heuristic 70%; clean per-problem stratification (see entry below) |
+| 3 | **Phase-1 baseline locked** — four classical lanes on 20-problem corpus (4 models) | ✅ 2026-04-28 | random 65% / LH 70% / bumps 50% / heuristic 60%; per-model stratification is the real story (cylinder hardest, lamellar surprisingly easy for uninformed lanes — see 2026-04-28 entry) |
 | 4 | **Held-out Axis-0 seed frozen** — `dev` seed for prompt iteration vs `reported` seed (untouched until final number) | ⏳ pending | not yet split in `eval/corpus.py` |
 | 5 | **First scorecard row** — `LLMProposer` against Claude on Axis 0 + Axis B, with critique cache | ⏳ pending | `proposer/llm.py` is a stub |
 
@@ -38,6 +38,147 @@ Meta-changes shipped alongside the gates:
   ([`dfec791`](https://github.com/ljding94/autoSASfit/commit/dfec791)).
 - This file, `PROGRESS.md`, started 2026-04-27
   ([`2f0e761`](https://github.com/ljding94/autoSASfit/commit/2f0e761)).
+
+---
+
+## 2026-04-28
+
+### Phase-1 baseline re-locked on 4-model corpus
+
+Ran `scripts/run_baseline_eval.py` end-to-end (~2:48 wall, single
+core) against the expanded corpus committed in
+[`a7cbb50`](https://github.com/ljding94/autoSASfit/commit/a7cbb50):
+20 problems (5 each of `sphere`, `power_law`, `cylinder`,
+`lamellar`), seed=0, deliberately-bad inits, max 12 outer iters,
+acceptance = 10% relative parameter recovery + reduced χ² < 2.0.
+
+#### Headline numbers
+
+| proposer | n | success | median iters | p90 iters | vs 2-model run |
+|---|---:|---:|---:|---:|---|
+| random | 20 | 65% | 1.0 | 3.0 | 60% → 65% |
+| latin_hypercube | 20 | 70% | 1.5 | 6.8 | unchanged |
+| bumps_restart | 20 | 50% | 1.0 | 4.7 | unchanged |
+| heuristic | 20 | 60% | 1.0 | 2.0 | **70% → 60%** ↓ |
+
+The flat lane average is more misleading than the 2-model version
+was, because the four model classes split the difficulty cleanly
+across lanes. The per-model view is the real story.
+
+#### Per-model stratification
+
+| family | random | LH | bumps_restart | heuristic |
+|---|---:|---:|---:|---:|
+| sphere (5) | 4/5 | 5/5 | 3/5 | **5/5** |
+| power_law (5) | 2/5 | 2/5 | 2/5 | 2/5 |
+| **cylinder (5)** | 2/5 | 2/5 | **1/5** | 2/5 |
+| **lamellar (5)** | **5/5** | **5/5** | 4/5 | 3/5 |
+
+Three findings:
+
+**1. Cylinder is the hardest model class.** Three of five cylinder
+problems fail across **all four** lanes (`cylinder_02/03/04`) with
+high χ²ᵣ (340, 200, 794) and high parameter RMSE (4.0, 0.4, 0.7).
+This is a *wrong-basin* failure — different from the power_law
+χ²-trap. The "two length scales — Guinier reads only one"
+prediction in the vault sasmodels survey holds: when both radius
+and length start far from truth, uniform-bounds and Guinier-seeded
+inits both fail to escape, and history-best anchoring
+(`bumps_restart`) is even worse because the best fit so far is
+also in the wrong basin.
+
+**2. Lamellar is *easier* than the survey predicted.** Random and
+LH both hit 5/5; bumps_restart 4/5. The Q⁻² + integer-spaced minima
+landscape has a wide LM basin of attraction — even uninformed
+random draws from the [20, 300] Å thickness range converge. The
+survey overcalled difficulty for the *base* `lamellar` model; the
+hard-lamellar prediction was really about the *stack variants*
+(Bragg peaks). The vault note is being corrected accordingly.
+
+**3. Heuristic regressed on the headline because of a real bug,
+not a fundamental property.** `proposer/heuristic.py:124` uses a
+hardcoded `np.random.default_rng(0)` in the unknown-model fallback
+branch, so every `lamellar` problem gets the same fallback seed
+— which happens to fall in the basin of `lamellar_02/03/04` but
+not `00/01`. Fix is one line (pass `self.rng` into
+`_heuristic_seed`). **Per-family**, heuristic still wins or ties
+on every model class for which it has an informed branch:
+
+- sphere 5/5 (the *only* lane to recover all five)
+- power_law 2/5 (tie — same wrong-but-χ²~1 fits, see below)
+- cylinder 2/5 (tie with random and LH; one better than bumps)
+- lamellar 3/5 (only because of the bug)
+
+The lane average obscures all of this — the open question
+"per-model vs per-lane scorecard reporting" (in the vault hub
+note) just got concrete: **the lane average is now actively
+misleading**. The Phase-2 reporting structure should be per-model
+primary, lane average derived.
+
+#### Power-law degeneracy preserved verbatim
+
+All four lanes converge to *identical* wrong-but-χ²~1 fits on
+`power_law_02/03/04`:
+
+| problem | χ²ᵣ across all 4 lanes | param RMSE across all 4 lanes |
+|---|---:|---:|
+| power_law_02 | 0.7906 | 0.5674 |
+| power_law_03 | 0.9647 | 5.023 |
+| power_law_04 | 1.144 | 5041.55 |
+
+Numbers match to 4+ decimal places across `random.csv`,
+`latin_hypercube.csv`, `bumps_restart.csv`, `heuristic.csv`. This
+confirms the canonical Axis-C target finding from 2026-04-27:
+power-law (scale, power, bg) trade off such that multiple
+parameter sets fit the σ-band equally. Property of the data, not
+the proposer. Phase-3 design unchanged.
+
+#### What this baseline now claims and doesn't
+
+- **Does claim:** with the current 4-model corpus, max_iters=12,
+  eps_p=10%, χ²ᵣ_max=2, an LLM proposer needs to clear ~70% (LH's
+  rate, statistically the most defensible floor at n=20) on the
+  same corpus to match the strongest classical lane on Axis 0. To
+  claim *lift*, it needs to **also** show better per-model rates,
+  not just a higher average. Headline-only comparisons can be
+  gamed by lane composition.
+- **Does claim:** cylinder (3/5 lanes-wide failures) and power_law
+  (3/5 χ²-trap failures) are already the hard regimes a VLM
+  proposer should be pressure-tested on. Sphere and lamellar are
+  near-saturated for uninformed lanes and won't discriminate.
+- **Does not claim:** that the headline ordering is statistically
+  meaningful at n=20 either. Heuristic 60% vs LH 70% is a
+  10-percentage-point gap on 20 problems — within sampling noise,
+  and entirely explained by the heuristic-fallback bug.
+- **Caveat for milestone 4:** still using `seed=0` (the dev seed)
+  for both runs. Splitting `dev` vs `reported` corpora is the next
+  unblocking task before Phase-2 numbers are claimed.
+
+#### Reproducing
+
+Identical to the 2026-04-27 run, but on the corpus committed in
+[`a7cbb50`](https://github.com/ljding94/autoSASfit/commit/a7cbb50):
+
+```bash
+python3 scripts/run_baseline_eval.py
+```
+
+Writes `outputs/baseline_eval/{random,latin_hypercube,bumps_restart,heuristic}.csv`
+plus `summary.md` and per-iteration plots under
+`plots/{lane}/{problem}/iter_NN.png`. Outputs are gitignored;
+regenerable from the seed.
+
+### Heuristic fallback bug (filed, not yet fixed)
+
+`src/autosasfit/proposer/heuristic.py:124` — `rng =
+np.random.default_rng(0)` in the unknown-model branch should be
+`rng = self.rng` (or accept the rng as a parameter to
+`_heuristic_seed`). Effect: the heuristic lane is deterministic on
+any model without a sphere/cylinder/power_law branch, which means
+its lamellar performance reflects one fixed init plus jitter, not
+five independent informed seeds. Easy fix; held until the
+inner-loop-method-per-model decision and any other heuristic
+branches (e.g. ellipsoid, lamellar) are designed together.
 
 ---
 
