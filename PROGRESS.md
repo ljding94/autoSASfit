@@ -26,7 +26,7 @@ write-ups for each landed-gate live in the dated entries below.
 | 2 | **Informed non-AI floor** — `HeuristicProposer` (Guinier/Porod) + `BumpsRestartProposer` (history-best anchor) | ✅ 2026-04-27 | commit [`1320c20`](https://github.com/ljding94/autoSASfit/commit/1320c20); 12/12 sandbox tests green |
 | 3 | **Phase-1 baseline locked** — four classical lanes on 20-problem corpus (4 models) | ✅ 2026-04-28 | random 65% / LH 70% / bumps 50% / heuristic 60%; per-model stratification is the real story (cylinder hardest, lamellar surprisingly easy for uninformed lanes — see 2026-04-28 entry) |
 | 4 | **Held-out Axis-0 seed frozen** — `dev` seed for prompt iteration vs `reported` seed (untouched until final number) | ✅ 2026-04-28 | `DEV_SEED=0` / `REPORTED_SEED=20260428` named in `eval/corpus.py`; sanity-checked disjoint (dev sphere r₀=142.20 Å, reported r₀=18.33 Å); 12/12 sandbox tests green |
-| 5 | **First scorecard row** — `LLMProposer` against Claude on Axis 0 + Axis B, with critique cache | ⏳ pending | `proposer/llm.py` is a stub |
+| 5 | **First scorecard row** — `LLMProposer` against Claude on Axis 0 + Axis B, with critique cache | 🛠 in-progress 2026-04-28 | infrastructure landed: `agent/{prompts,schema,cache}.py` + `proposer/llm.py` + `scripts/run_phase2_eval.py`; 17/17 sandbox tests green; **first API call not yet made** — awaiting prompt review before locking |
 
 Meta-changes shipped alongside the gates:
 
@@ -167,6 +167,93 @@ Writes `outputs/baseline_eval/{random,latin_hypercube,bumps_restart,heuristic}.c
 plus `summary.md` and per-iteration plots under
 `plots/{lane}/{problem}/iter_NN.png`. Outputs are gitignored;
 regenerable from the seed.
+
+### Phase 2 — `LLMProposer` infrastructure landed (gate 5 in progress)
+
+End-to-end Phase-2 plumbing is in place. The first API call has not
+yet been made — the locked-prompt invariant from PROJECT_PLAN.md §8
+means once the system prompt is used for the first benchmark run, any
+edit invalidates that run. So this commit lands the *implementation*;
+the *first run* is a separate, deliberate decision after prompt
+review.
+
+#### What landed
+
+- `src/autosasfit/agent/__init__.py` — module entrypoint.
+- `src/autosasfit/agent/prompts.py` — locked system prompt (~700
+  tokens), model library block (derived from `models.registry` so it
+  stays in sync), history block, current-iteration block, and the
+  full `build_user_content(...)` that returns the
+  Anthropic-Messages-API content blocks (text + image + text).
+- `src/autosasfit/agent/schema.py` — Pydantic `LLMResponse` schema.
+  Fields: `action` (refine/switch_model/accept/give_up — Phase-2 set,
+  no compose), `confidence` ∈ [0, 1] (separate from action — gives
+  Axis-B a continuous calibration signal), optional `model`,
+  optional `params`, required `diagnosis`. Compose stays out until
+  Phase 3 wires it into the `Proposal` dataclass.
+- `src/autosasfit/agent/cache.py` — file-backed `CritiqueCache`,
+  keyed on SHA256 of (plot_sha, history_summary, sas_model,
+  problem_label, vlm_id). One JSON file per key under
+  `.cache/llm_responses/`. Editing the system prompt is intentionally
+  *not* in the key — when the prompt changes, you want the cache to
+  invalidate; empty the cache dir.
+- `src/autosasfit/proposer/llm.py` — implements the `Proposer`
+  protocol. Per-call flow: build cache key → cache hit returns
+  immediately; cache miss calls `client.messages.parse()` with the
+  locked system prompt and `LLMResponse` schema, retries once on
+  parse failure with a stricter format reminder, falls back to a
+  no-op refine if both attempts fail. Out-of-bounds params are
+  clamped + logged; missing params substituted from the current
+  iteration's init; unknown model names fall back to refine of the
+  current model. Lazy-imports `anthropic` so the rest of the package
+  stays importable without the `[llm]` extra installed.
+- `scripts/run_phase2_eval.py` — CLI for the LLM lane. Defaults:
+  `claude-opus-4-7`, `--corpus dev` (uses `DEV_SEED`),
+  `.cache/llm_responses/`. Pass `--corpus reported` for the
+  gate-5-locking run against `REPORTED_SEED`.
+- `tests/test_llm_proposer.py` — 17 sandbox tests covering the
+  schema, prompt builder, cache round-trip, and proposal-conversion
+  edge cases (clamping, missing params, unknown model fallback).
+  Doesn't make any API calls.
+
+#### Design choices, locked unless flagged for revisit
+
+| Choice | Rationale |
+|---|---|
+| Default model: `claude-opus-4-7` | Highest capability per skill guidance; users who want cheaper iteration pass `--model claude-sonnet-4-6`. |
+| Effort: `medium` | Balance between quality and token cost. |
+| Thinking: not configured (model defaults) | Adaptive thinking on Opus 4.7 has visible content omitted by default; for benchmark transparency we'd want `display=summarized`, but that's a future enhancement once we know whether Opus's auto-thinking improves Axis-0 vs the simpler path. |
+| `messages.parse()` with Pydantic schema | Schema-validated JSON with one SDK call. Validates against `LLMResponse`, raises on schema mismatch. |
+| No `cache_control` markers (yet) | System prompt + library = ~1000 tokens; below Opus 4.7's 4096-token cache minimum and Sonnet 4.6's 2048. When Phase-2 prompt iteration grows the prefix above threshold, add markers on the last system block. |
+| Image: base64 PNG via standard image content block | Consistent with Anthropic SDK docs; one image per call, the just-completed iteration's plot. |
+| Failure: parse error → one retry with stricter reminder → fall back to no-op refine | Doesn't crash the harness mid-corpus; the no-op refine is honest about what happened (confidence=0.0, diagnosis="LLM parse failure: ..."). |
+| `compose` action excluded from Phase 2 | `Proposal` dataclass doesn't carry `composition` yet (Phase-3 add). Adding it to the schema here would silently widen the contract. |
+
+#### Cost budget for Phase 2
+
+At current sizes (~3K input, ~500 output tokens per call):
+
+| Model | Per call | Per corpus run (240 calls) | 10 prompt-iter cycles |
+|---|---:|---:|---:|
+| `claude-opus-4-7` | ~$0.027 | ~$6.50 | ~$65 |
+| `claude-sonnet-4-6` | ~$0.017 | ~$4.00 | ~$40 |
+
+The `CritiqueCache` cuts re-run cost to whatever the prompt change
+actually invalidates — typically a fraction of the full corpus.
+
+#### What's NOT done
+
+- **The first API call.** Per PROJECT_PLAN.md §8 the system prompt is
+  locked at first run for cross-VLM fairness. Reviewing the locked
+  prompt against §8's spec is a precondition; once we run, any edit
+  to `agent/prompts.py:SYSTEM_PROMPT` invalidates that run.
+- **Axis-B reporting.** The harness already records both objective
+  acceptance and the proposer's `accept` action; Axis-B's
+  (reliability, coverage) pair will be derived in `eval/report.py`
+  when the first run produces data.
+- **The `run_reported_eval.py` script** is unified into
+  `run_phase2_eval.py --corpus reported` rather than a separate file.
+  When we lock the gate-5 number, that's the single command.
 
 ### Gate 4 — held-out seed split landed
 
