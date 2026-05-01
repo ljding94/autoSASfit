@@ -18,6 +18,10 @@ dependencies = [
 [project.optional-dependencies]
 llm = [
     "anthropic>=0.40",
+    "pydantic>=2",
+]
+mcp = [
+    "mcp>=1.0",
 ]
 
 [tool.setuptools.packages.find]

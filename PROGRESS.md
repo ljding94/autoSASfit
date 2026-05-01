@@ -168,6 +168,84 @@ plus `summary.md` and per-iteration plots under
 `plots/{lane}/{problem}/iter_NN.png`. Outputs are gitignored;
 regenerable from the seed.
 
+### Phase 2 — Skill+MCP path landed (gate 5 — MCP runner + server)
+
+> Date 2026-05-01. Continues the architectural pivot recorded in the
+> 2026-04-28 entry below. Both delivery paths now exist; first end-to-
+> end test-drive still pending.
+
+**Pivot context** (recap from vault progress log 2026-05-01 entry):
+Lijie has a Claude Code subscription and wants Phase-2 prompt iteration
+to bill flat-rate, not per-token. Investigated the Claude Agent SDK
+(rejected — also requires `ANTHROPIC_API_KEY`; GitHub issue #559 is the
+unresolved feature request) and `claude -p` subprocess (works but
+ugly). Settled on: package autoSASfit as an MCP tool + Agent Skill,
+let Claude Code itself be the agent loop, run it via one `claude -p`
+per benchmark run. Modeled on the `program.md` protocol-contract
+pattern from [karpathy/autoresearch](https://github.com/karpathy/autoresearch).
+
+#### What landed in this commit
+
+- **`src/autosasfit/eval/mcp_runner.py`** — pure-Python state machine
+  for the MCP path. Drives benchmark progression one outer iteration at
+  a time. Persists run state to `<out_root>/<run_tag>/state.json` for
+  resumption across server restarts. Sandbox-testable via stubbed
+  `fit_one` / `render_fit_plot`.
+  - **Loop semantics differ from `controller.run_loop`:** the runner
+    does *not* terminate on objective acceptance. It records the
+    harness's verdict per iter, lets the agent decide when to stop.
+    Termination = agent `accept` / `give_up`, or `max_iters` hit.
+    This gives Axis-B (calibration) a clean signal at every iter —
+    the agent's `accept` action vs. the harness's criterion verdict
+    are recorded independently for post-analysis.
+
+- **`src/autosasfit/skill/mcp_server.py`** — thin FastMCP wrapper
+  exposing five tools matching `program.md` Appendix A:
+    - `start_run`, `list_models`, `get_problem_state`,
+      `submit_proposal`, `write_summary`
+  - Inline plot delivery via `mcp.types.ImageContent` (program.md §B
+    decision) — the agent gets the canonical PNG in the same tool
+    response as the state JSON, no separate Read call needed.
+  - Runs as a stdio MCP server: `python -m autosasfit.skill.mcp_server`.
+
+- **`pyproject.toml`** — new `[mcp]` optional extra installs
+  `mcp>=1.0`. The `[llm]` extra also got `pydantic>=2` made explicit
+  (was transitive via anthropic).
+
+- **`tests/test_mcp_runner.py`** — 11 sandbox tests covering: start
+  run, lazy iter-0 fit on first state query, objective verdict per
+  iter, agent `accept` / `give_up` termination, `max_iters`
+  termination, out-of-bounds clamping, unknown-model rejection on
+  switch_model, summary CSV generation, **state persistence across
+  fresh runner instances** (resume from disk), and `list_models`
+  registry pass-through.
+
+- **`src/autosasfit/skill/__init__.py`** — package marker explaining
+  the layout.
+
+#### Still pending for gate 5
+
+- **`.claude/skills/autosasfit/SKILL.md`** — Anthropic Skill manifest
+  pointing at `program.md` and the MCP server.
+- **`.claude/skills/autosasfit/program.md`** — locked operator
+  playbook. Currently a draft in the vault
+  ([[autoSASfit Phase-2 program.md]]); decisions A–D are resolved.
+  Move into the repo when the test-drive confirms the MCP contract
+  matches the prose.
+- **`scripts/run_phase2_eval.sh`** — bash entrypoint. One `claude -p`
+  invocation per benchmark run.
+- **`SYSTEM_PROMPT` ← `program.md` derivation** — the API path's
+  `agent/prompts.py:SYSTEM_PROMPT` should be derived from `program.md`
+  (decision A: program.md is canonical). Wire-up TBD.
+- **First end-to-end test-drive** on a 1-problem corpus.
+
+#### Test results
+
+- 11/11 mcp_runner tests green
+- 12/12 existing proposer/loop tests still green
+- 17/17 LLMProposer tests still green
+- 40/40 sandbox tests overall
+
 ### Phase 2 — `LLMProposer` infrastructure landed (gate 5 in progress)
 
 End-to-end Phase-2 plumbing is in place. The first API call has not

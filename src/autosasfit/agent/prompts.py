@@ -250,6 +250,46 @@ def build_user_content(
 # ---------------------------------------------------------------------------
 # Cache key inputs — public so cache.py can hash them deterministically.
 
+def build_user_text_with_image_ref(
+    problem: Problem, history: list[Iteration]
+) -> tuple[str, Path]:
+    """User-message variant for the Claude Code CLI path.
+
+    The `claude -p` CLI doesn't accept inline image content blocks — the
+    canonical pattern is to reference a file with the `@<path>` syntax
+    and let the model read it via a path-restricted Read tool. This
+    builder returns (text_with_image_ref, plot_path) so the caller can
+    add `--allowed-tools "Read(<plot_path>)"` to scope tool access to
+    just that one file.
+
+    The text body is the same as `build_user_content` minus the inline
+    base64 image — so the LLM sees the same task framing, only the
+    image-delivery mechanism differs.
+    """
+    cur = history[-1]
+    if cur.plot_path is None:
+        raise ValueError(
+            f"Current iteration {cur.iter} has no plot_path; "
+            "ClaudeCodeProposer requires the controller to render plots "
+            "(pass plot_dir=... to run_loop)."
+        )
+
+    plot_path = Path(cur.plot_path).resolve()
+
+    text_pre = "\n\n".join([
+        build_model_library_block(),
+        build_history_block(history),
+        build_current_iteration_block(problem, history),
+    ])
+
+    text_post = (
+        f"The plot for this iteration is at @{plot_path}. Use the Read "
+        f"tool to view it, then reply with the JSON object only. No "
+        f"prose, no markdown fence."
+    )
+    return f"{text_pre}\n\n{text_post}", plot_path
+
+
 def cache_key_inputs(
     problem: Problem, history: list[Iteration], vlm_id: str
 ) -> dict[str, Any]:
