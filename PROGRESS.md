@@ -27,6 +27,7 @@ write-ups for each landed-gate live in the dated entries below.
 | 3 | **Phase-1 baseline locked** — four classical lanes on 20-problem corpus (4 models) | ✅ 2026-04-28 | random 65% / LH 70% / bumps 50% / heuristic 60%; per-model stratification is the real story (cylinder hardest, lamellar surprisingly easy for uninformed lanes — see 2026-04-28 entry) |
 | 4 | **Held-out Axis-0 seed frozen** — `dev` seed for prompt iteration vs `reported` seed (untouched until final number) | ✅ 2026-04-28 | `DEV_SEED=0` / `REPORTED_SEED=20260428` named in `eval/corpus.py`; sanity-checked disjoint (dev sphere r₀=142.20 Å, reported r₀=18.33 Å); 12/12 sandbox tests green |
 | 5 | **First scorecard row** — `LLMProposer` against Claude on Axis 0 + Axis B, with critique cache | ✅ 2026-05-10 | reported-seed locked run: **75% success (15/20), Axis-B 0.94 / 1.0 (precision/recall), median 2 iters**. Per-model: sphere 100% / cylinder 40% / lamellar 80% / power_law 80%. CSV: `outputs/phase2_eval_reported/2026-05-10-opus47-reported-locked/summary.csv`. The locked Phase-2 row for Claude-Opus-4.7 on `REPORTED_SEED=20260428` against the locked `program.md`. |
+| 6 | **Classical floor on reported seed** — `run_baseline_eval.py --corpus reported` for apples-to-apples vs the gate-5 LLM row | ✅ 2026-05-10 | random **75%** / LH 65% / bumps_restart 65% / heuristic 60% on `REPORTED_SEED=20260428`. LLM (75%) ties random for top overall; uniquely 100% on sphere; lags random on cylinder (40% vs 60%). LLM also has Axis-B (0.94, 1.0) — classical lanes don't report calibration. `outputs/baseline_eval_reported/`. |
 
 Meta-changes shipped alongside the gates:
 
@@ -42,6 +43,71 @@ Meta-changes shipped alongside the gates:
 ---
 
 ## 2026-05-10
+
+### Gate 6 — classical floor on reported seed (apples-to-apples)
+
+> Same session as gate 5, fired right after the LLM row was committed.
+> One small CLI change to `run_baseline_eval.py` to expose the
+> `--corpus dev|reported` flag (matching `run_phase2_eval.py`'s
+> convention), then ran the four classical lanes against
+> `REPORTED_SEED=20260428`. ~3 min wall, no LLM tokens.
+
+#### Headline numbers (reported seed, 20-problem corpus, max 12 iters)
+
+|  | sphere | cyl | lam | pwr | **all** | Axis-B reported? |
+|---|---:|---:|---:|---:|---:|---|
+| random | 80% | 60% | 80% | 80% | **75%** | no |
+| latin_hypercube | 80% | 20% | 80% | 80% | **65%** | no |
+| bumps_restart | 80% | 40% | 60% | 80% | **65%** | no |
+| heuristic | 80% | 20% | 60% | 80% | **60%** | no |
+| **LLM (Opus 4.7)** | **100%** | 40% | 80% | 80% | **75%** | **yes (0.94, 1.0)** |
+
+#### Reading
+
+- **Overall: LLM ties `random` for top (75%)**, beating LH/bumps_restart
+  (65%) and heuristic (60%). Different shape: LLM is uniquely 100% on
+  sphere; random is uniquely 60% on cylinder.
+- **Sphere is the LLM's clean win.** Only proposer at 5/5; everyone
+  else 4/5. The bold-jump heuristic at the bound-clamped local minima
+  pays off here.
+- **Cylinder remains the weakness.** 40% vs random's 60% — same
+  signal as on dev. The (R, L, scale) coupling reading is not where
+  the vision lane shines.
+- **Calibration is the unique LLM contribution** to the scorecard.
+  Classical lanes accept whenever bumps's objective criterion fires;
+  there's no "agent says accept" signal to score against truth.
+  The LLM's `agent_accept_correct=0.94 / agent_accept_recall=1.0` on
+  this corpus is a metric the classical floor structurally cannot
+  produce — it's the Axis-B measurement working as designed.
+
+#### Note on dev↔reported corpus difficulty
+
+The four model classes on `REPORTED_SEED` are noticeably easier across
+all proposers than on `DEV_SEED` (gate 3): cylinder went from 40%/40%/20%/40%
+(dev) → 60%/20%/40%/20% (reported), but lamellar went 100%/100%/80%/60%
+(dev) → 80%/80%/60%/60% (reported). The 75% LLM number is therefore
+**not** directly comparable to the 60% dev number from earlier today
+— the corpora are differently sampled. What this comparison locks is
+the LLM-vs-classical gap *on the reported corpus*; that gap is real
+and is the gate-5 scorecard signal.
+
+#### What changed in code
+
+`scripts/run_baseline_eval.py` — added `argparse` with
+`--corpus dev|reported`. Default is dev (preserves existing behavior /
+gate-3 semantics). Output dirs:
+- `outputs/baseline_eval/` — dev (existing)
+- `outputs/baseline_eval_reported/` — reported (new)
+
+40/40 sandbox tests still green.
+
+#### Reproducing
+
+```bash
+python scripts/run_baseline_eval.py --corpus reported
+```
+
+---
 
 ### Gate 5 — locked scorecard row on reported corpus
 

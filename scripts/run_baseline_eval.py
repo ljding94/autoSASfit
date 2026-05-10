@@ -7,13 +7,16 @@ a markdown summary table comparing iterations-to-accept.
 This is the *baseline number* the Phase-2 LLMProposer will be compared
 against.
 
-    python scripts/run_baseline_eval.py
+    python scripts/run_baseline_eval.py                 # default: dev seed
+    python scripts/run_baseline_eval.py --corpus dev
+    python scripts/run_baseline_eval.py --corpus reported
 """
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
 
-from autosasfit.eval.corpus import DEV_SEED, generate_corpus
+from autosasfit.eval.corpus import DEV_SEED, REPORTED_SEED, generate_corpus
 from autosasfit.eval.harness import run_corpus
 from autosasfit.eval.report import write_csv, write_markdown
 from autosasfit.proposer.heuristic import HeuristicProposer
@@ -28,7 +31,21 @@ MAX_ITERS = 12
 
 
 def main() -> None:
-    out_root = Path("outputs/baseline_eval")
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--corpus",
+        choices=("dev", "reported"),
+        default="dev",
+        help="Which corpus seed to run against (default: dev).",
+    )
+    args = parser.parse_args()
+
+    if args.corpus == "dev":
+        seed = DEV_SEED
+        out_root = Path("outputs/baseline_eval")
+    else:
+        seed = REPORTED_SEED
+        out_root = Path("outputs/baseline_eval_reported")
     out_root.mkdir(parents=True, exist_ok=True)
 
     # Four-model corpus. Sphere and power_law are the easy controls;
@@ -37,16 +54,12 @@ def main() -> None:
     # spread the lanes apart. HeuristicProposer falls back to bounds-uniform
     # on lamellar by design — the benchmark wants to surface where the
     # informed heuristic does and doesn't have signal.
-    #
-    # DEV_SEED is the iteration corpus per PROJECT_PLAN.md §6.5; the
-    # reported scorecard runs against REPORTED_SEED (separate script,
-    # added when Phase-2 LLMProposer is ready to lock its first row).
     corpus = generate_corpus(
         models=["sphere", "power_law", "cylinder", "lamellar"],
         n_per_model=5,
-        seed=DEV_SEED,
+        seed=seed,
     )
-    print(f"generated corpus: {len(corpus)} problems")
+    print(f"corpus={args.corpus} seed={seed}: {len(corpus)} problems")
 
     lanes = [
         ("random",          lambda prob: RandomProposer(seed=prob.seed)),
