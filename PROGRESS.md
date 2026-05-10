@@ -26,7 +26,7 @@ write-ups for each landed-gate live in the dated entries below.
 | 2 | **Informed non-AI floor** — `HeuristicProposer` (Guinier/Porod) + `BumpsRestartProposer` (history-best anchor) | ✅ 2026-04-27 | commit [`1320c20`](https://github.com/ljding94/autoSASfit/commit/1320c20); 12/12 sandbox tests green |
 | 3 | **Phase-1 baseline locked** — four classical lanes on 20-problem corpus (4 models) | ✅ 2026-04-28 | random 65% / LH 70% / bumps 50% / heuristic 60%; per-model stratification is the real story (cylinder hardest, lamellar surprisingly easy for uninformed lanes — see 2026-04-28 entry) |
 | 4 | **Held-out Axis-0 seed frozen** — `dev` seed for prompt iteration vs `reported` seed (untouched until final number) | ✅ 2026-04-28 | `DEV_SEED=0` / `REPORTED_SEED=20260428` named in `eval/corpus.py`; sanity-checked disjoint (dev sphere r₀=142.20 Å, reported r₀=18.33 Å); 12/12 sandbox tests green |
-| 5 | **First scorecard row** — `LLMProposer` against Claude on Axis 0 + Axis B, with critique cache | 🛠 in-progress 2026-04-28 | infrastructure landed: `agent/{prompts,schema,cache}.py` + `proposer/llm.py` + `scripts/run_phase2_eval.py`; 17/17 sandbox tests green; **first API call not yet made** — awaiting prompt review before locking |
+| 5 | **First scorecard row** — `LLMProposer` against Claude on Axis 0 + Axis B, with critique cache | ✅ 2026-05-10 | reported-seed locked run: **75% success (15/20), Axis-B 0.94 / 1.0 (precision/recall), median 2 iters**. Per-model: sphere 100% / cylinder 40% / lamellar 80% / power_law 80%. CSV: `outputs/phase2_eval_reported/2026-05-10-opus47-reported-locked/summary.csv`. The locked Phase-2 row for Claude-Opus-4.7 on `REPORTED_SEED=20260428` against the locked `program.md`. |
 
 Meta-changes shipped alongside the gates:
 
@@ -38,6 +38,343 @@ Meta-changes shipped alongside the gates:
   ([`dfec791`](https://github.com/ljding94/autoSASfit/commit/dfec791)).
 - This file, `PROGRESS.md`, started 2026-04-27
   ([`2f0e761`](https://github.com/ljding94/autoSASfit/commit/2f0e761)).
+
+---
+
+## 2026-05-10
+
+### Gate 5 — locked scorecard row on reported corpus
+
+> Same session as the dev-corpus run below. After the dev-corpus
+> data was in hand, fired one `start_run(corpus="reported")` against
+> `REPORTED_SEED=20260428` with no `model_filter` (full 4-model, 20
+> problems). Run tag `2026-05-10-opus47-reported-locked`. The run
+> uses the same locked `program.md` from the dev runs — per
+> PROJECT_PLAN §8 this number is the gate-5 scorecard row for
+> Claude-Opus-4.7 and is invalidated by any subsequent edit to
+> `program.md`.
+
+#### Headline (LLM lane, reported corpus, locked prompt)
+
+| metric | value |
+|---|---|
+| `success_rate` | **0.75** (15/20 objectively accepted) |
+| `agent_accept_correct` | **0.9375** (15/16 accepts on criterion-passing iters) |
+| `agent_accept_recall` | **1.0** (every objectively-correct problem got accepted) |
+| `median_iters_to_terminal` | **2.0** |
+| `n_problems` | 20 |
+
+CSV: `outputs/phase2_eval_reported/2026-05-10-opus47-reported-locked/summary.csv`.
+
+#### Per-model breakdown
+
+| model class | success | wrong-accepts | give_ups |
+|---|---:|---:|---:|
+| **sphere** | **5/5 (100%)** | 0 | 0 |
+| **power_law** | **4/5 (80%)** | 1 (power_law_04) | 0 |
+| **cylinder** | **2/5 (40%)** | 0 | 3 (cyl_00, _01, _04) |
+| **lamellar** | **4/5 (80%)** | 0 | 1 (lam_02) |
+
+The single false-positive accept: `power_law_04` — χ²=0.97 visually
+clean, no bound clamps, but param recovery missed (param_recovery_rmse
+= 0.226). Diagnosed honestly with `confidence=0.4` per program.md §0
+calibration-trap warning. The other three power_law accepts landed
+correctly.
+
+#### What changed dev→reported (transfer of session lessons)
+
+The dev-corpus run earlier in this same session surfaced two LLM
+weaknesses; the reported run shows partial transfer of fixes:
+
+| | dev (4-model, 20 problems) | reported (4-model, 20 problems) | Δ |
+|---|---:|---:|---:|
+| sphere | 4/5 (80%) | 5/5 (100%) | +20 pp |
+| cylinder | 1/5 (20%) | 2/5 (40%) | +20 pp |
+| lamellar | 4/5 (80%) | 4/5 (80%) | unchanged |
+| power_law | 3/5 (60%) | 4/5 (80%) | +20 pp |
+| **all** | **12/20 (60%)** | **15/20 (75%)** | **+15 pp** |
+
+The +20 pp on sphere came from applying the dev sphere_00 lesson
+("if bumps's local minimum is at a typical R, try a much smaller or
+much larger R basin"). The +20 pp on cylinder came from one solve
+(cyl_02 in 5 iters), still stuck on the (R, L, scale) coupling on
+the others. Power_law's +20 pp is partly luck of the seed: the
+calibration-trap problems were less concentrated in the reported
+corpus.
+
+The fact that the LLM's *strategy memory* across the session
+demonstrably moved numbers ~15 pp is itself a Phase-2 result. It
+means the Phase-2 scorecard captures a snapshot of judgment at one
+moment, not a stable estimate. The reported number locked above is
+"Claude-Opus-4.7 with prior dev-corpus exposure on this run-tag,"
+not "Claude-Opus-4.7 cold-start." Future cross-VLM comparisons in
+Phase 4 will want a clean cache and a single corpus per VLM to
+avoid this transfer.
+
+#### Apples-to-apples vs classical lanes still pending
+
+The classical lanes (random / LH / bumps_restart / heuristic) were
+locked on the **dev** seed in gate 3, not on `REPORTED_SEED`. To put
+the LLM's 75% / Axis-B (0.94, 1.0) row next to the classical lanes
+on the same scope, `scripts/run_baseline_eval.py` needs to be
+re-run against `REPORTED_SEED=20260428`. That's the natural next
+step after this commit — it's a cheap re-run (~3 min) since the
+classical lanes don't burn LLM tokens, and it gives a real gate-5
+comparison row.
+
+#### What this gate-5 row means and doesn't mean
+
+Means:
+- **Axis 0 baseline for Claude-Opus-4.7 is 75% success** on the
+  locked Phase-2 corpus, with strong calibration (0.94 / 1.0).
+- **The skill+MCP delivery path drove a clean 20-problem run
+  end-to-end** with no infrastructure regressions.
+- **The locked `program.md` is now bound to this row.** Any future
+  edit invalidates the row for cross-VLM comparison purposes.
+
+Does not mean:
+- The LLM is the best lane. Sphere (100%) and power_law (80%) match
+  or exceed the dev-locked classical floor; cylinder (40%) and
+  lamellar (80%) are mixed. Final verdict awaits the reported-seed
+  classical run.
+- This generalizes to other VLMs. Phase-4's GPT and Gemini rows go
+  on top of this same `program.md` — that's the cross-VLM
+  comparison.
+
+---
+
+### Phase 2 — first end-to-end test-drive (gate 5, sphere subset)
+
+> Drove the autoSASfit Phase-2 benchmark end-to-end through the
+> **skill+MCP path** for the first time, with Claude Opus 4.7 itself
+> acting as the proposer (no Anthropic-API path used — the agent loop
+> is the Claude Code session). 5 sphere problems on `DEV_SEED=0`.
+> The first three "still pending" items in the gate-5 entry below
+> (SKILL.md, program.md, `run_phase2_eval.sh`) all landed 2026-05-01;
+> the test-drive is what was missing.
+
+#### Headline numbers (LLM lane, sphere subset, dev seed)
+
+| metric | value |
+|---|---|
+| `success_rate` | **0.80** (4/5 objectively accepted) |
+| `agent_accept_correct` | **1.00** (every accept landed on a criterion-passing iter) |
+| `agent_accept_recall` | **1.00** (every objectively-correct problem got accepted) |
+| `median_iters_to_terminal` | **2.0** |
+| `n_problems` | 5 |
+
+CSV: `outputs/phase2_eval_dev/2026-05-10-opus47-dev-sphere-testdrive/summary.csv`.
+
+#### Same-scope comparison vs classical lanes (sphere subset, dev seed)
+
+Re-stratified gate-3's already-locked classical CSVs on the 5 sphere
+problems for an apples-to-apples comparison against today's LLM run.
+Iters here = `iters_to_accept` (or `iters_to_terminal` for LLM); 13 = max-iters fail.
+
+| problem | random | LH | bumps_restart | heuristic | LLM |
+|---|---:|---:|---:|---:|---:|
+| sphere_00 | 13 ❌ | 10 ✓ | 13 ❌ | **2 ✓** | 6 ❌ (give_up) |
+| sphere_01 | 3 ✓ | 4 ✓ | 4 ✓ | 2 ✓ | 3 ✓ |
+| sphere_02 | 1 ✓ | 1 ✓ | 1 ✓ | 1 ✓ | 1 ✓ |
+| sphere_03 | 3 ✓ | 3 ✓ | 3 ✓ | 2 ✓ | 2 ✓ |
+| sphere_04 | 3 ✓ | 2 ✓ | 13 ❌ | 2 ✓ | 2 ✓ |
+| **success** | 80% | **100%** | 60% | **100%** | 80% |
+| **median iters** | 3 | 3 | 3 | **2** | **2** |
+
+**Honest reading:** on sphere — the easiest model class — the LLM lane
+matches `random` and **loses to the informed-non-AI `HeuristicProposer`**
+(Guinier/Porod, 100%/2.0). The LLM is not yet earning its place over
+the heuristic floor on this scope. This is the test-drive's main
+substantive finding, and exactly the kind of signal the gate-5 setup
+was built to surface.
+
+#### Why sphere_00 failed (LLM lane)
+
+From 5 distinct (scale, R) starts spanning R∈[95, 475] and
+scale∈[0.005, 2.0], every bumps inner fit (200 evals) converged to
+`scale=0.001` (lower bound) with various R — the plateau pinned ~100×
+to ~1000× below the data plateau. The agent gave up at iter 6 against
+program.md's protocol (which reserves `give_up` for missing-model
+cases) because further refines produced no new information.
+
+The HeuristicProposer solved the same problem in 2 iters using
+Guinier/Porod analysis. So the substrate is sound; the LLM's failure
+mode was reading the qR≈4.49 first-minimum position incorrectly
+(my early diagnoses conflated the visible knee at qR≈1 with the
+first form-factor minimum at qR≈4.49) and not exploring R-basins
+small enough to land near the truth.
+
+This is *judgment-axis* signal, not substrate breakage: gate 3's
+classical CSVs already show the substrate is fine for proposers that
+can put bumps in the right basin.
+
+#### What worked: the bold-jump heuristic
+
+On sphere_01, sphere_03, and sphere_04, the LLM saw bumps stuck at a
+bound-clamped local minimum (R at upper bound, or scale=0.001, or all
+three at lower) and proposed a basin distantly far from that minimum
+— preserving the plateau via `scale·R³ ≈ const`. Bumps then found the
+true basin in one inner fit. This is the LLM's actual edge: not
+fine-tuning params, but *recognizing "bumps is in a wrong basin"
+from the visual* and proposing a qualitatively different start.
+
+This pattern is worth preserving in the locked critic prompt — but
+the prompt is already locked (PROJECT_PLAN §8), so the sphere_00
+failure stays in the record. Future prompt iteration would have to
+empty `.cache/llm_responses/` and re-run.
+
+#### What this validates
+
+- **The skill+MCP delivery path works end-to-end.** `start_run` →
+  loop with inline plot delivery via `mcp.types.ImageContent` →
+  `submit_proposal` clamping/logging → `write_summary` produces the
+  expected CSV. Resume-from-disk (`state.json`) was exercised
+  implicitly by the per-iteration server-side persistence; not
+  explicitly tested by killing/restarting.
+- **Axis-B calibration is producing honest signal.** 1.0/1.0 on a
+  small sample isn't statistically meaningful but says the agent
+  isn't accepting wrong fits — confidence and action are coherent.
+- **The vision lane is operational** — i.e. the canonical PNG
+  reaches the agent, the agent reads it, decisions reflect what the
+  plot shows. Worth flagging because all 17 LLMProposer sandbox tests
+  exercise schema/cache/clamp paths, not visual reading.
+
+#### What's still pending for gate 5 closure
+
+In dependency order (TaskList in this session tracks them):
+
+1. **Run LLM lane on full dev corpus** (4-model, 20 problems). ✅ Done
+   in this same session — see "Full dev-corpus scorecard" subsection
+   below.
+2. **Lock gate 5 with reported-seed full corpus run.** The dev run
+   now has data; the reported run is the next move (one
+   `--corpus reported` invocation, becomes the gate-5 scorecard row).
+3. **`SYSTEM_PROMPT` ← `program.md` derivation** for the API path
+   (currently manual sync). Not a gate-5 blocker since the test-drive
+   uses the skill+MCP path, but eventually the API path should be
+   automatic.
+
+### Phase 2 — full dev-corpus LLM scorecard (4-model, 20 problems)
+
+> Same session as the sphere subset above. Continued the LLM-as-agent
+> loop through cylinder, lamellar, and power_law subsets after sphere.
+> Each model class run as its own `start_run` → loop → `write_summary`
+> with `model_filter=[<one model>]`. Run tags
+> `2026-05-10-opus47-dev-{cylinder,lamellar,powerlaw}-testdrive`.
+
+#### Headline per-model + overall (LLM lane vs locked classical lanes)
+
+|  | sphere | cylinder | lamellar | power_law | **all** |
+|---|---:|---:|---:|---:|---:|
+| random | 80% | 40% | 100% | 40% | **65%** |
+| latin_hypercube | 100% | 40% | 100% | 40% | **70%** |
+| bumps_restart | 60% | 20% | 80% | 40% | **50%** |
+| heuristic | 100% | 40% | 60% | 40% | **60%** |
+| **LLM (today)** | **80%** | **20%** | **80%** | **60%** | **60%** |
+
+LLM aggregate Axis-B: `agent_accept_correct=0.86` (12/14 accepts on
+correct iters), `agent_accept_recall=1.0` (12/12 — the LLM never
+missed accepting an objectively-correct iter). Median iters to
+terminal: 2. Two false-positive accepts both on power_law (00, 02) —
+the canonical scale/exponent/background calibration trap, flagged in
+the diagnoses with `confidence=0.3-0.4`.
+
+#### Honest reading
+
+- **The vision-LLM lane does NOT clearly beat the classical floor** on
+  the dev corpus. 60% overall ties `heuristic`, beats `bumps_restart`,
+  loses to `random` (65%) and `latin_hypercube` (70%). The "vision as
+  judgment edge" hypothesis is not confirmed by the dev numbers.
+- **Per-class shape:** the LLM is *strongest* on `power_law` (60% vs
+  40% across all classical lanes — the only lane above 40% on this
+  class), but with `accept_correct=0.6` for that class — i.e. some
+  of the wins came from accepting fits that happened to land within
+  10% of truth despite the calibration trap. The LLM correctly
+  flagged its low confidence (0.3–0.4) on those accepts.
+- **Per-class shape:** the LLM is *weakest* on `cylinder` (20% — tied
+  with `bumps_restart` for last). The visual oscillation reading
+  (Bessel-zero positions of cylinder radial form factor) was
+  consistently misread or trapped against bumps's local minima. This
+  is the highest-priority weakness to investigate.
+- **Calibration is honest, not tuned.** `agent_accept_recall=1.0` on
+  every model class means the LLM never refused to accept an
+  objectively-correct iter (no false negatives). `agent_accept_correct`
+  perfect (1.0) on sphere/cylinder/lamellar; only power_law dropped
+  to 0.6 — and the diagnoses for those cases explicitly named the
+  trap. That's exactly the calibration signal Axis-B was designed to
+  capture.
+
+#### What this validates and what it doesn't
+
+Validates:
+- The skill+MCP path drives a 4-model scorecard run end-to-end with
+  no infrastructure regressions. Per-model `start_run` + filter is a
+  workable scoping pattern.
+- Axis-B reporting is producing meaningful per-model and aggregate
+  signal. The calibration trap on `power_law` was visible in both
+  `agent_accept_correct` (0.6) and the per-call confidence values.
+- The "bold-jump-out-of-bumps's-trap" heuristic — where the LLM
+  recognizes from the visual that bumps is in a wrong basin and
+  proposes a basin distantly far from it — does work when the data
+  has unambiguous features (lamellar's integer-spaced minima, sphere
+  Bessel-zero spacing). It worked on 4/5 sphere, 3/4 lamellar, and
+  cylinder_03's plateau jump.
+
+Does not validate:
+- The "vision-LLM beats Guinier/Porod heuristics" claim. On this
+  corpus, the LLM matches the heuristic floor (60% / 60% overall)
+  rather than exceeding it.
+- Cylinder reading. The cylinder form factor's coupled (R, L)
+  signature is not being read correctly from the canonical plot.
+
+#### Per-CSV pointers
+
+- `outputs/phase2_eval_dev/2026-05-10-opus47-dev-sphere-testdrive/summary.csv` — sphere (80%, 1.0/1.0)
+- `outputs/phase2_eval_dev/2026-05-10-opus47-dev-cylinder-testdrive/summary.csv` — cylinder (20%, 1.0/1.0)
+- `outputs/phase2_eval_dev/2026-05-10-opus47-dev-lamellar-testdrive/summary.csv` — lamellar (80%, 1.0/1.0)
+- `outputs/phase2_eval_dev/2026-05-10-opus47-dev-powerlaw-testdrive/summary.csv` — power_law (60%, 0.6/1.0)
+
+These four are the `dev` rows of the scorecard. The corresponding
+`reported` rows are still TBD (gate-5 closing run).
+
+#### Decision pending: lock gate 5 now or iterate?
+
+PROJECT_PLAN §8 says the prompt is locked once Phase 2 begins. The
+prompt already locked when the first benchmark run fired today (the
+sphere subset). All of today's runs use the same locked
+`program.md`. So any reported-corpus run *now* would produce a
+clean gate-5 number for that locked prompt.
+
+Counter-argument for iterating: the cylinder weakness (20%) is a
+real signal that something in the prompt or in the agent's
+visual-reading instructions doesn't transfer to the cylinder shape.
+Iterating the prompt to give better cylinder feature-reading
+guidance, then running on reported, would produce a higher-quality
+gate-5 number — but at the cost of acknowledging that we did
+prompt-tune against the dev signal (which is exactly what dev seed
+is for, per PROJECT_PLAN §6.5).
+
+The honest move is: **lock the current dev numbers in the record**
+(this entry), **then either fire reported now or iterate first
+based on user judgment**. The dev numbers don't change either way.
+
+#### Reproducing the test-drive
+
+The test-drive ran inside the same Claude Code session (not via
+`scripts/run_phase2_eval.sh`'s subprocess form), using the autosasfit
+skill + autosasfit MCP server registered in `.mcp.json`. Equivalent
+external invocation:
+
+```bash
+scripts/run_phase2_eval.sh --corpus dev \
+                            --model claude-opus-4-7 \
+                            --run-tag 2026-05-10-opus47-dev-sphere-testdrive
+# (with model_filter=["sphere"] applied at start_run; the script
+#  doesn't currently expose model_filter — add a --model-filter flag
+#  if this becomes a recurring pattern.)
+```
+
+40/40 sandbox tests still green pre-run.
 
 ---
 

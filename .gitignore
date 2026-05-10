@@ -52,3 +52,7 @@ outputs/
 data/raw/
 *.h5
 *.nxs
+
+# Local-only Claude Code permission allowlist; the shared skill files
+# under .claude/skills/ are tracked.
+.claude/settings.local.json
