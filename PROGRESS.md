@@ -28,6 +28,7 @@ write-ups for each landed-gate live in the dated entries below.
 | 4 | **Held-out Axis-0 seed frozen** — `dev` seed for prompt iteration vs `reported` seed (untouched until final number) | ✅ 2026-04-28 | `DEV_SEED=0` / `REPORTED_SEED=20260428` named in `eval/corpus.py`; sanity-checked disjoint (dev sphere r₀=142.20 Å, reported r₀=18.33 Å); 12/12 sandbox tests green |
 | 5 | **First scorecard row** — `LLMProposer` against Claude on Axis 0 + Axis B, with critique cache | ✅ 2026-05-10 | reported-seed locked run: **75% success (15/20), Axis-B 0.94 / 1.0 (precision/recall), median 2 iters**. Per-model: sphere 100% / cylinder 40% / lamellar 80% / power_law 80%. CSV: `outputs/phase2_eval_reported/2026-05-10-opus47-reported-locked/summary.csv`. The locked Phase-2 row for Claude-Opus-4.7 on `REPORTED_SEED=20260428` against the locked `program.md`. |
 | 6 | **Classical floor on reported seed** — `run_baseline_eval.py --corpus reported` for apples-to-apples vs the gate-5 LLM row | ✅ 2026-05-10 | random **75%** / LH 65% / bumps_restart 65% / heuristic 60% on `REPORTED_SEED=20260428`. LLM (75%) ties random for top overall; uniquely 100% on sphere; lags random on cylinder (40% vs 60%). LLM also has Axis-B (0.94, 1.0) — classical lanes don't report calibration. `outputs/baseline_eval_reported/`. |
+| 7a | **Phase-3 protocol primitive** — `compose` action + `composition` field on `Proposal`; controller raises `NotImplementedError` until Phase-3 substrate lands | ✅ 2026-05-10 | step 1 of 4 toward Axes A + C. `proposer/base.py` extends `Action` Literal; `loop/controller.py` defends with a clear error. Existing classical proposers unchanged. 42/42 sandbox tests green (was 40, +2 for protocol-primitive coverage). |
 
 Meta-changes shipped alongside the gates:
 
@@ -43,6 +44,75 @@ Meta-changes shipped alongside the gates:
 ---
 
 ## 2026-05-10
+
+### Gate 7a — Phase-3 protocol primitive (compose action)
+
+> Step 1 of the 4-step Phase-3 plan (see [[autoSASfit project notes]]
+> for the full plan). Smallest closed unit: extend the `Proposal`
+> contract with the `compose` action and `composition` field, defended
+> by a clear `NotImplementedError` in the Phase-2 controller until
+> the Phase-3 substrate lands in step 2.
+
+#### What changed
+
+- `src/autosasfit/proposer/base.py`:
+  - `Action` Literal now includes `"compose"` (set: refine, switch_model,
+    compose, accept, give_up).
+  - `Proposal.composition: Optional[dict[str, Any]] = None` — meaningful
+    only when `action == "compose"`. Documented shape:
+    `{"factors": [...], "combinator": "product"|"sum"}`.
+  - Removed unused `field` import (pyright caught it).
+- `src/autosasfit/loop/controller.py`:
+  - `compose` action raises `NotImplementedError` with a message
+    pointing at `fitting/bumps_wrapper.py` and the model registry —
+    the two things step 2 will extend.
+  - Removed unused `Any` import.
+- `tests/test_proposer_and_loop.py`:
+  - `_ComposeProposer` test stub.
+  - `test_proposal_accepts_compose_action_and_composition` — dataclass-
+    only smoke test; verifies Phase-1/2 backward compat (default
+    `composition=None`).
+  - `test_loop_raises_notimplemented_on_compose_action` — proves the
+    Phase-2 controller refuses compose. Uses `try/except` not
+    `pytest.raises` so the test still works in script mode (file
+    convention).
+  - Both registered in the `if __name__ == "__main__"` runner.
+
+#### Intentionally NOT changed in step 1
+
+- `src/autosasfit/agent/schema.py:Phase2Action` — still excludes
+  compose. The Phase-2 LLMProposer schema is locked per gate-5.
+  Phase-3 will need a separate `Phase3Action` (or an extended
+  schema) when step 3 lands.
+- `src/autosasfit/eval/mcp_runner.py:Action` — still Phase-2-narrow.
+  The locked `program.md` doesn't expose compose, so the Phase-2
+  MCP runner shouldn't either. Phase-3 will get its own runner /
+  program.md.
+- `src/autosasfit/skill/mcp_server.py` docstring — Phase-2 contract
+  unchanged.
+- No corpus generator, no substrate extension, no LLM prompt edit.
+
+The Phase-2 surface (locked program.md, mcp_server, schema) is
+deliberately untouched so the gate-5 row stays valid.
+
+#### Test results
+
+- 42/42 pytest (was 40; +2 for the new protocol-primitive tests)
+- 14/14 script-mode (was 13; +1 for the dataclass smoke test —
+  `test_loop_raises_notimplemented_on_compose_action` requires the
+  monkeypatch helper so it lives only in the with-`mp` block, but it
+  does run in script mode and passes)
+
+#### Next step (gate 7b)
+
+**Axis-A substrate**: extend `bumps_wrapper.fit_one` to accept a
+compositional spec (`Product` / `Sum` combinator over factors) and
+add a `models/composite.py` for the combinator dataclasses. Mock-fit
+tests only at this stage; no real corpus run yet. After 7b lands,
+the `NotImplementedError` in the controller can be lifted (or the
+controller dispatches to a `compose_fit` path).
+
+---
 
 ### Gate 6 — classical floor on reported seed (apples-to-apples)
 

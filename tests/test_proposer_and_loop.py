@@ -88,6 +88,20 @@ class _StuckProposer:
                         note="stuck")
 
 
+class _ComposeProposer:
+    """Emits a Phase-3 `compose` action — controller should reject it
+    until Phase-3 substrate lands."""
+    name = "compose"
+
+    def propose(self, problem: Problem, history) -> Proposal:
+        return Proposal(
+            action="compose",
+            composition={"factors": ["sphere", "hardsphere"],
+                         "combinator": "product"},
+            note="phase-3 placeholder",
+        )
+
+
 # ---------------------------------------------------------------------------
 
 def test_acceptance_criterion_basic():
@@ -116,6 +130,47 @@ def test_loop_accepts_immediately_with_perfect_proposer(monkeypatch):
     # Initial init *is* truth here, so fit at iter 0 is already accepted.
     assert res.iters_to_accept == 1
     assert len(res.iterations) == 1
+
+
+def test_proposal_accepts_compose_action_and_composition():
+    """Phase-3 protocol primitive: Proposal accepts compose + composition."""
+    p = Proposal(
+        action="compose",
+        composition={"factors": ["sphere", "hardsphere"],
+                     "combinator": "product"},
+        note="axis-A scaffolding",
+    )
+    assert p.action == "compose"
+    assert p.composition is not None
+    assert p.composition["combinator"] == "product"
+    assert p.composition["factors"] == ["sphere", "hardsphere"]
+    # composition is None by default, preserving Phase-1/2 backward compat
+    p_phase2 = Proposal(action="refine", init_params={"radius": 50.0})
+    assert p_phase2.composition is None
+
+
+def test_loop_raises_notimplemented_on_compose_action(monkeypatch):
+    """Phase-2 controller does not yet support compose — must raise
+    a clear NotImplementedError so a Phase-3 prompt run can't silently
+    degrade to a Phase-2 fit."""
+    truth = {"scale": 1.0, "radius": 50.0, "background": 0.001}
+    _set_fake_truth(truth)
+    monkeypatch.setattr(controller_mod, "fit_one", _fake_fit_identity)
+
+    bad_init = {"scale": 0.5, "radius": 200.0, "background": 0.01}
+    prob = Problem(model="sphere", true_params=truth, init_params=bad_init,
+                   q=np.array([0.01, 0.1]), Iq=np.array([1.0, 0.1]),
+                   dIq=np.array([0.03, 0.003]), label="t-compose")
+
+    # Using try/except (not pytest.raises) so this test also runs as a
+    # plain script per the file-level docstring.
+    try:
+        run_loop(prob, _ComposeProposer(), max_iters=4, plot_dir=None,
+                 accept=AcceptanceCriterion(eps_p=0.10, chi2_red_max=2.0))
+    except NotImplementedError as e:
+        assert "compose" in str(e).lower()
+        return
+    raise AssertionError("expected NotImplementedError on compose action")
 
 
 def test_loop_runs_to_max_iters_with_stuck_proposer(monkeypatch):
@@ -375,6 +430,8 @@ if __name__ == "__main__":
         print("ok")
 
     _run("test_acceptance_criterion_basic", test_acceptance_criterion_basic)
+    _run("test_proposal_accepts_compose_action_and_composition",
+         test_proposal_accepts_compose_action_and_composition)
 
     with tempfile.TemporaryDirectory() as d:
         _run("test_render_fit_plot_writes_png", test_render_fit_plot_writes_png, Path(d))
@@ -403,6 +460,13 @@ if __name__ == "__main__":
     try:
         _run("test_loop_runs_to_max_iters_with_stuck_proposer",
              test_loop_runs_to_max_iters_with_stuck_proposer, mp)
+    finally:
+        mp.undo()
+
+    mp = _MP()
+    try:
+        _run("test_loop_raises_notimplemented_on_compose_action",
+             test_loop_raises_notimplemented_on_compose_action, mp)
     finally:
         mp.undo()
 

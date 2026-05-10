@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
 from ..fitting.bumps_wrapper import fit_one
 from ..models.registry import REGISTRY
@@ -138,6 +138,14 @@ def run_loop(
                 iters_to_accept=max_iters + 1,
                 total_inner_evals=sum(it.n_inner_evals for it in history),
                 final_chi2_red=final_chi2, final_params=final_params,
+            )
+
+        if proposal.action == "compose":
+            raise NotImplementedError(
+                "compose action is reserved for Phase 3 (Axis A — compositional "
+                "model assembly). The Phase-2 controller does not yet support "
+                "multi-component fits; extend fitting/bumps_wrapper.py and the "
+                "model registry before emitting compose."
             )
 
         if proposal.action == "switch_model" and proposal.model:

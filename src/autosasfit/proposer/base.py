@@ -8,7 +8,7 @@ the proposer does internally — random sample, LH draw, vision-LLM API call
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Optional, Protocol
 
@@ -48,15 +48,24 @@ class Problem:
     label: str = ""
 
 
-Action = Literal["refine", "switch_model", "accept", "give_up"]
+Action = Literal["refine", "switch_model", "compose", "accept", "give_up"]
 
 
 @dataclass
 class Proposal:
-    """What the proposer says to do for the next iteration."""
+    """What the proposer says to do for the next iteration.
+
+    `composition` is meaningful only for `action == "compose"` (Axis A,
+    Phase 3+). Shape:
+        {"factors": ["sphere", "hardsphere"], "combinator": "product"}
+        {"factors": ["power_law", "gaussian_peak"], "combinator": "sum"}
+    The substrate that consumes this lives in Phase 3 — Phase-2 proposers
+    do not emit `compose`, and the Phase-2 controller raises on it.
+    """
     action: Action
     init_params: Optional[dict[str, float]] = None
     model: Optional[str] = None         # only meaningful if action == "switch_model"
+    composition: Optional[dict[str, Any]] = None  # only meaningful if action == "compose"
     note: str = ""
 
 
