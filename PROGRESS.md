@@ -29,6 +29,7 @@ write-ups for each landed-gate live in the dated entries below.
 | 5 | **First scorecard row** — `LLMProposer` against Claude on Axis 0 + Axis B, with critique cache | ✅ 2026-05-10 | reported-seed locked run: **75% success (15/20), Axis-B 0.94 / 1.0 (precision/recall), median 2 iters**. Per-model: sphere 100% / cylinder 40% / lamellar 80% / power_law 80%. CSV: `outputs/phase2_eval_reported/2026-05-10-opus47-reported-locked/summary.csv`. The locked Phase-2 row for Claude-Opus-4.7 on `REPORTED_SEED=20260428` against the locked `program.md`. |
 | 6 | **Classical floor on reported seed** — `run_baseline_eval.py --corpus reported` for apples-to-apples vs the gate-5 LLM row | ✅ 2026-05-10 | random **75%** / LH 65% / bumps_restart 65% / heuristic 60% on `REPORTED_SEED=20260428`. LLM (75%) ties random for top overall; uniquely 100% on sphere; lags random on cylinder (40% vs 60%). LLM also has Axis-B (0.94, 1.0) — classical lanes don't report calibration. `outputs/baseline_eval_reported/`. |
 | 7a | **Phase-3 protocol primitive** — `compose` action + `composition` field on `Proposal`; controller raises `NotImplementedError` until Phase-3 substrate lands | ✅ 2026-05-10 | step 1 of 4 toward Axes A + C. `proposer/base.py` extends `Action` Literal; `loop/controller.py` defends with a clear error. Existing classical proposers unchanged. 42/42 sandbox tests green (was 40, +2 for protocol-primitive coverage). |
+| 7b | **Phase-3 substrate** — `Composition` dataclass + `fit_composite()` parallel to `fit_one`; sasmodels native `a@b` (product) / `a+b` (sum) string syntax used | ✅ 2026-05-10 | step 2 of 4. `models/composite.py` (sandbox-importable, lazy-imports nothing); `fitting/bumps_wrapper.fit_composite` (lazy-imports sasmodels — same two-tier pattern). Phase-2 `fit_one` untouched, gate-5 substrate still bit-for-bit. **54/54 sandbox tests green** (+12 for composite coverage: dataclass smoke, validation, dict-parsing, name building, round-trip). |
 
 Meta-changes shipped alongside the gates:
 
@@ -44,6 +45,97 @@ Meta-changes shipped alongside the gates:
 ---
 
 ## 2026-05-10
+
+### Gate 7b — Phase-3 substrate (Composition + fit_composite)
+
+> Step 2 of 4 toward Phase 3. Extends the substrate just enough to
+> *fit* compositions; does not yet wire the controller's compose path,
+> add Phase-3 factors to the registry, or generate any corpus.
+> Phase-2 `fit_one` and `REGISTRY` are bit-for-bit unchanged — gate-5
+> substrate is preserved.
+
+#### What changed
+
+- **`src/autosasfit/models/composite.py`** (new, sandbox-importable):
+  - `Combinator = Literal["product", "sum"]`
+  - `Composition` dataclass: `factors: list[str]`, `combinator: Combinator`.
+    Validates ≥2 factors and known combinator on `__post_init__`.
+  - `to_sasmodels_name()` → `"sphere@hardsphere"` / `"power_law+gaussian_peak"`.
+    Sasmodels parses both natively (the `@` is sasmodels's product
+    operator, `+` is its additive operator). For >2 factors the
+    operator chains left-to-right.
+  - `composition_from_dict(d)` — strict parser for the
+    `Proposal.composition` wire format, with clear errors for missing
+    keys, wrong factor types, and unknown combinators.
+- **`src/autosasfit/fitting/bumps_wrapper.py`** — added `fit_composite()`:
+  - Same I/O shape as `fit_one` but takes a `Composition` + a
+    `factor_specs: dict[str, ModelSpec]` lookup instead of a single
+    `ModelSpec`.
+  - Merges fixed_params across factors; raises if two factors set
+    the same fixed key to different values (non-physical).
+  - Hands sasmodels the composite via its native string syntax;
+    `load_model("sphere@hardsphere")` does the param-renaming work
+    (e.g., hardsphere's `radius` → `radius_effective` inside the
+    product).
+  - Bounds for fitted params: union of factors' `bounds` dicts.
+    Sasmodels-renamed keys (no entry in any factor's `bounds`)
+    fall back to sasmodels' built-in bounds — flagged as a future
+    refinement target.
+  - Uses lazy imports for sasmodels/bumps — preserves the two-tier
+    import model so sandbox tests still run without those deps.
+- **`tests/test_composite.py`** (new):
+  - 12 tests covering dataclass smoke, validation, dict-parsing,
+    name building (product / sum / 3-factor chain), round-trip
+    consistency.
+  - No sasmodels dependency — tests just exercise the protocol /
+    string-translation layer.
+  - Both pytest- and script-runnable per the file convention.
+
+#### Intentionally NOT changed in step 2
+
+- **`src/autosasfit/loop/controller.py`** — still raises
+  `NotImplementedError` on `compose`. Wiring it to dispatch to
+  `fit_composite()` is **step 3** (where the corpus and Phase-3 LLM
+  prompt come in). Leaving the raise in place means a Phase-3
+  proposer can't accidentally run against gate-5's controller path.
+- **`src/autosasfit/models/registry.py`** — Phase-2 4-model registry
+  is unchanged. Phase-3 factors (`hardsphere`, `gaussian_peak`,
+  `core_shell_sphere`, `stickyhardsphere`) land in step 3 alongside
+  the Axis-A corpus generator.
+- **`agent/schema.py`**, **`eval/mcp_runner.py`**, **`skill/mcp_server.py`**
+  — Phase-2 LLM-facing surface is untouched. Gate-5 program.md and
+  the locked LLMProposer schema stay valid for cross-VLM Phase-4
+  comparison on Axis 0+B.
+
+#### Tests
+
+- 54/54 pytest (was 42; +12 for the new composite module)
+- 12/12 script-mode for `tests/test_composite.py`
+- 14/14 script-mode for `tests/test_proposer_and_loop.py` (unchanged)
+- Runtime smoke: `Composition(...).to_sasmodels_name()` returns
+  `"sphere@hardsphere"` as expected.
+
+#### Step 3 sketch
+
+The next step is the bigger one — it does three coupled things that
+have to land together to be testable:
+
+1. Add Phase-3 factor specs (`hardsphere`, `gaussian_peak`, etc.) to
+   the registry — these are companion-only models, not standalone.
+2. Build the Axis-A corpus generator (3 composition types from the
+   axes spec): `sphere*hardsphere`, `power_law+gaussian_peak`,
+   `core_shell_sphere*stickyhardsphere`.
+3. Wire `loop/controller.py` to dispatch `compose` to `fit_composite`
+   when in Phase-3 mode (probably a config flag — Phase-2 `run_loop`
+   stays raising-on-compose).
+4. Write a separate `program-axis-a.md` for the Axis-A protocol so
+   Phase-2's program.md remains the locked Phase-2 contract for
+   cross-VLM comparison.
+
+After step 3, an LLM run against the Axis-A dev corpus produces the
+first Axis-A scorecard cell.
+
+---
 
 ### Gate 7a — Phase-3 protocol primitive (compose action)
 
