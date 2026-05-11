@@ -24,7 +24,12 @@ sys.path.insert(0, str(ROOT / "src"))
 from autosasfit.eval import harness as harness_mod  # noqa: E402
 from autosasfit.eval.harness import run_corpus  # noqa: E402
 from autosasfit.loop import controller as controller_mod  # noqa: E402
-from autosasfit.loop.controller import AcceptanceCriterion, run_loop  # noqa: E402
+from autosasfit.loop.controller import (  # noqa: E402
+    AcceptanceCriterion,
+    run_loop,
+    run_loop_axis_a,
+)
+from autosasfit.models.composite import Composition  # noqa: E402
 from autosasfit.proposer.base import Iteration, Problem, Proposal  # noqa: E402
 from autosasfit.proposer.heuristic import HeuristicProposer  # noqa: E402
 from autosasfit.proposer.random_proposer import (  # noqa: E402
@@ -171,6 +176,140 @@ def test_loop_raises_notimplemented_on_compose_action(monkeypatch):
         assert "compose" in str(e).lower()
         return
     raise AssertionError("expected NotImplementedError on compose action")
+
+
+def test_run_loop_axis_a_dispatches_to_fit_composite_when_in_composite_mode(
+    monkeypatch,
+):
+    """Axis-A loop: when Problem starts in composite mode (current
+    step-3a corpus shape), iter-0 dispatches to fit_composite, not
+    fit_one. Mocks both so the test runs without sasmodels."""
+    truth = {"scale": 1.0, "radius": 50.0, "radius_effective": 80.0,
+             "volfraction": 0.2, "background": 0.001}
+    _set_fake_truth(truth)
+
+    fake_fit_one_calls = []
+    fake_fit_composite_calls = []
+
+    def _fake_fit_one(spec, q, Iq, dIq, init_params, *, max_evals=200):
+        fake_fit_one_calls.append((spec.name, dict(init_params)))
+        return _fake_fit_identity(spec, q, Iq, dIq, init_params,
+                                  max_evals=max_evals)
+
+    def _fake_fit_composite(composition, factor_specs, q, Iq, dIq,
+                             init_params, *, max_evals=200, method="lm"):
+        fake_fit_composite_calls.append(
+            (composition.to_sasmodels_name(), dict(init_params))
+        )
+        return _fake_fit_identity(None, q, Iq, dIq, init_params,
+                                  max_evals=max_evals)
+
+    monkeypatch.setattr(controller_mod, "fit_one", _fake_fit_one)
+    monkeypatch.setattr(controller_mod, "fit_composite", _fake_fit_composite)
+
+    comp = Composition(factors=["sphere", "hardsphere"], combinator="product")
+    prob = Problem(
+        model="sphere@hardsphere",  # composite name → composite mode
+        true_params=truth,
+        init_params=dict(truth),    # iter-0 fit is "perfect" given truth
+        q=np.array([0.01, 0.1]), Iq=np.array([1.0, 0.1]),
+        dIq=np.array([0.03, 0.003]),
+        composition=comp,
+        label="t-axis-a-composite-start",
+    )
+
+    res = run_loop_axis_a(
+        prob, _PerfectProposer(truth), max_iters=5, plot_dir=None,
+        accept=AcceptanceCriterion(eps_p=0.10, chi2_red_max=2.0),
+    )
+    # Composite mode → fit_composite was called, fit_one was not.
+    assert len(fake_fit_composite_calls) >= 1
+    assert len(fake_fit_one_calls) == 0
+    assert fake_fit_composite_calls[0][0] == "sphere@hardsphere"
+    # Truth-as-init means iter 0 is already accepted.
+    assert res.accepted
+    assert res.iters_to_accept == 1
+
+
+def test_run_loop_axis_a_compose_action_switches_into_composite_mode(
+    monkeypatch,
+):
+    """Single-model start + agent emits `compose` → subsequent iters
+    use fit_composite. The semantically-correct Axis-A measurement
+    shape (will be the default once step 3d redesigns the corpus)."""
+    truth_single = {"scale": 1.0, "radius": 50.0, "background": 0.001}
+    _set_fake_truth(truth_single)
+
+    fake_fit_one_calls = []
+    fake_fit_composite_calls = []
+
+    def _fake_fit_one(spec, q, Iq, dIq, init_params, *, max_evals=200):
+        fake_fit_one_calls.append((spec.name, dict(init_params)))
+        # Make iter-0 single fit BAD so harness doesn't accept early.
+        return SimpleNamespace(
+            fit_params=dict(init_params),
+            chi2_red=999.0,
+            n_evals=42,
+            fit_curve=np.asarray(Iq),
+            success=True,
+        )
+
+    def _fake_fit_composite(composition, factor_specs, q, Iq, dIq,
+                             init_params, *, max_evals=200, method="lm"):
+        fake_fit_composite_calls.append(
+            (composition.to_sasmodels_name(), dict(init_params))
+        )
+        return SimpleNamespace(
+            fit_params=dict(init_params),
+            chi2_red=1.5,
+            n_evals=42,
+            fit_curve=np.asarray(Iq),
+            success=True,
+        )
+
+    monkeypatch.setattr(controller_mod, "fit_one", _fake_fit_one)
+    monkeypatch.setattr(controller_mod, "fit_composite", _fake_fit_composite)
+
+    # Stub proposer that emits compose at iter 0.
+    class _ComposeAtFirst:
+        name = "compose-at-first"
+
+        def propose(self, problem, history):
+            return Proposal(
+                action="compose",
+                composition={"factors": ["sphere", "hardsphere"],
+                             "combinator": "product"},
+                init_params={"scale": 1.0, "radius": 50.0,
+                             "radius_effective": 80.0,
+                             "volfraction": 0.2, "background": 0.001},
+                note="propose composite at iter 0",
+            )
+
+    prob = Problem(
+        model="sphere",  # single-model start
+        true_params=truth_single,  # truth namespace also single-model;
+                                   # the harness will accept the
+                                   # composite fit because all
+                                   # truth_single keys exist in the
+                                   # composite fit_params.
+        init_params={"scale": 5.0, "radius": 200.0, "background": 0.5},
+        q=np.array([0.01, 0.1]), Iq=np.array([1.0, 0.1]),
+        dIq=np.array([0.03, 0.003]),
+        composition=None,  # truth is single-model for this contrived test
+        label="t-axis-a-compose-action",
+    )
+
+    res = run_loop_axis_a(
+        prob, _ComposeAtFirst(), max_iters=5, plot_dir=None,
+        accept=AcceptanceCriterion(eps_p=0.10, chi2_red_max=2.0),
+    )
+    # Iter 0: fit_one (bad fit, χ²=999). Iter 1+: fit_composite.
+    assert len(fake_fit_one_calls) == 1
+    assert len(fake_fit_composite_calls) >= 1
+    assert fake_fit_composite_calls[0][0] == "sphere@hardsphere"
+    # Iter 1's composite fit returns truth params → harness accepts.
+    assert res.accepted
+    assert res.iters_to_accept == 2
 
 
 def test_loop_runs_to_max_iters_with_stuck_proposer(monkeypatch):
@@ -467,6 +606,20 @@ if __name__ == "__main__":
     try:
         _run("test_loop_raises_notimplemented_on_compose_action",
              test_loop_raises_notimplemented_on_compose_action, mp)
+    finally:
+        mp.undo()
+
+    mp = _MP()
+    try:
+        _run("test_run_loop_axis_a_dispatches_to_fit_composite_when_in_composite_mode",
+             test_run_loop_axis_a_dispatches_to_fit_composite_when_in_composite_mode, mp)
+    finally:
+        mp.undo()
+
+    mp = _MP()
+    try:
+        _run("test_run_loop_axis_a_compose_action_switches_into_composite_mode",
+             test_run_loop_axis_a_compose_action_switches_into_composite_mode, mp)
     finally:
         mp.undo()
 

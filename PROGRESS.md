@@ -31,6 +31,7 @@ write-ups for each landed-gate live in the dated entries below.
 | 7a | **Phase-3 protocol primitive** — `compose` action + `composition` field on `Proposal`; controller raises `NotImplementedError` until Phase-3 substrate lands | ✅ 2026-05-10 | step 1 of 4 toward Axes A + C. `proposer/base.py` extends `Action` Literal; `loop/controller.py` defends with a clear error. Existing classical proposers unchanged. 42/42 sandbox tests green (was 40, +2 for protocol-primitive coverage). |
 | 7b | **Phase-3 substrate** — `Composition` dataclass + `fit_composite()` parallel to `fit_one`; sasmodels native `a@b` (product) / `a+b` (sum) string syntax used | ✅ 2026-05-10 | step 2 of 4. `models/composite.py` (sandbox-importable, lazy-imports nothing); `fitting/bumps_wrapper.fit_composite` (lazy-imports sasmodels — same two-tier pattern). Phase-2 `fit_one` untouched, gate-5 substrate still bit-for-bit. **54/54 sandbox tests green** (+12 for composite coverage: dataclass smoke, validation, dict-parsing, name building, round-trip). |
 | 7c | **Phase-3 registry + corpus** — `CompositeSpec` + `COMPOSITE_REGISTRY` (3 entries) + `generate_axis_a_corpus()`; `Problem.composition` field carries ground truth | ✅ 2026-05-10 | step 3a of 4. Three Axis-A composites: `sphere@hardsphere`, `power_law+gaussian_peak`, `core_shell_sphere@stickyhardsphere` — parameter sets verified empirically against sasmodels (no guessing). End-to-end smoke: 6 problems generated cleanly with real I(Q) data. Phase-2 `REGISTRY` and `generate_corpus` bit-for-bit unchanged. **60/60 sandbox tests** (+6: registry well-formedness, renamed-param pinning, `Problem.composition` backward compat). |
+| 7d | **Phase-3 controller dispatch** — parallel `run_loop_axis_a()` in `loop/controller.py`; dispatches to `fit_composite` when in composite mode; handles `compose` action transitioning single→composite | ✅ 2026-05-10 | step 3b of 4. Phase-2 `run_loop` untouched (still raises on compose — gate-5 contract preserved). `switch_model` in composite mode raises (agent should emit a fresh `compose`). Known limitation deferred to step 3d: Axis-A's *primary* metric (composition match rate) requires starting in single-model framing; current step-3a corpus starts in composite mode, so this gate measures parameter recovery on composite problems, not composition recognition. **62/62 sandbox tests** (+2: composite-mode dispatch path + compose-action transition path; both use mocked fit_one/fit_composite so run without sasmodels). |
 
 Meta-changes shipped alongside the gates:
 
@@ -46,6 +47,79 @@ Meta-changes shipped alongside the gates:
 ---
 
 ## 2026-05-10
+
+### Gate 7d — Phase-3 controller dispatch (parallel `run_loop_axis_a`)
+
+> Step 3b of 4. Adds the Phase-3 outer loop that handles the
+> `compose` action and dispatches to `fit_composite`. Phase-2
+> `run_loop` is intentionally not touched — its
+> `NotImplementedError` on compose is the Phase-2 contract for
+> cross-VLM comparison on Axis 0+B.
+
+#### What changed
+
+- **`src/autosasfit/loop/controller.py`**: added `run_loop_axis_a()`
+  parallel to `run_loop`:
+  - State machine: `cur_composition: Optional[Composition]`. None =
+    single-model mode → `fit_one`. Set = composite mode → `fit_composite`.
+  - Initializer: if the Problem arrives with `composition` set AND
+    `problem.model` is a key in `COMPOSITE_REGISTRY`, start in
+    composite mode (current step-3a corpus shape). Otherwise start
+    in single-model mode (the eventual step-3d corpus shape).
+  - On agent `compose` action: validate `proposal.composition` via
+    `composition_from_dict`, transition to composite mode, use
+    `proposal.init_params` as the next iter's composite-keyed init.
+  - On agent `switch_model` in composite mode: raise — switching
+    composites should be emitted as a fresh `compose`, not as a
+    single-model switch.
+- **`tests/test_proposer_and_loop.py`**: +2 tests:
+  - `test_run_loop_axis_a_dispatches_to_fit_composite_when_in_composite_mode`
+    — Problem starts in composite mode, iter 0 calls `fit_composite`,
+    `fit_one` never called.
+  - `test_run_loop_axis_a_compose_action_switches_into_composite_mode`
+    — Problem starts in single-model mode, agent emits compose at
+    iter 0, iter 1 dispatches to `fit_composite`.
+  - Both use mocked `fit_one`/`fit_composite` (via `monkeypatch`
+    on the controller module), so they run without sasmodels.
+
+#### Known limitation flagged for step 3d
+
+The semantically-correct Axis-A measurement requires the corpus to
+*start* in single-model framing — that's the only way to measure
+"did the agent recognize the data is compositional and emit
+`compose`?" The current step-3a corpus binds `problem.model =
+"sphere@hardsphere"` (composite) from iter 0, which short-circuits
+the recognition test.
+
+The runtime path for the correct shape *exists today* (step 3b's
+second test exercises it). What's missing is the corpus that
+produces the right starting frames:
+- `problem.model = <starting_single_factor_name>` (e.g.,
+  `"sphere"` for the truth-composition `sphere@hardsphere`)
+- `problem.init_params` = bad init in the single-model namespace
+- `problem.true_params` = truth params in the **composite** namespace
+  (for downstream scoring of the post-compose fit)
+- `problem.composition` = truth composition (Axis-A target)
+
+This is a corpus-generator revision plus a `starting_model: str`
+field on `CompositeSpec`. Deliberately deferred to step 3d so this
+commit ships a closed, testable unit.
+
+#### Tests
+
+- 62/62 pytest (was 60; +2 for the new loop coverage)
+- 16/16 script-mode in `test_proposer_and_loop.py` (was 14; +2)
+- 18/18 script-mode in `test_composite.py` (unchanged)
+
+#### What still needs to land for a full Phase-3 row
+
+Step 3c — write `program-axis-a.md` (the Axis-A LLM protocol), Phase-2
+`program.md` stays locked. Step 3d — fix the corpus starting-framing
+as described above, add `starting_model` to `CompositeSpec`. Step 3e
+(formerly step 3 in the rough outline) — actual Axis-A LLM run on dev,
+then reported, producing the first Axis-A scorecard cell.
+
+---
 
 ### Gate 7c — Phase-3 registry + Axis-A corpus generator
 

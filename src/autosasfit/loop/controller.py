@@ -11,7 +11,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-from ..fitting.bumps_wrapper import fit_one
+from ..fitting.bumps_wrapper import fit_composite, fit_one
+from ..models.composite import Composition
+from ..models.composite_registry import COMPOSITE_REGISTRY
 from ..models.registry import REGISTRY
 from ..proposer.base import Iteration, Problem, Proposer
 from ..viz.plots import render_fit_plot
@@ -150,6 +152,191 @@ def run_loop(
 
         if proposal.action == "switch_model" and proposal.model:
             cur_model = proposal.model
+
+        if proposal.init_params is None:
+            return RunResult(
+                accepted=False, iterations=history,
+                iters_to_accept=max_iters + 1,
+                total_inner_evals=sum(it.n_inner_evals for it in history),
+                final_chi2_red=final_chi2, final_params=final_params,
+            )
+
+        cur_init = dict(proposal.init_params)
+
+    return RunResult(
+        accepted=False, iterations=history,
+        iters_to_accept=max_iters + 1,
+        total_inner_evals=sum(it.n_inner_evals for it in history),
+        final_chi2_red=final_chi2, final_params=final_params,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Phase-3 / Axis-A outer loop.
+#
+# Parallel to run_loop above but supports the `compose` action and the
+# fit_composite substrate. The Phase-2 run_loop is intentionally not
+# touched — its NotImplementedError on compose is the Phase-2 contract.
+# Calls into run_loop_axis_a are explicit; the eval harness chooses
+# which loop to run per axis.
+#
+# State machine:
+#   cur_composition is None → single-model mode → fit_one
+#   cur_composition is set  → composite mode    → fit_composite
+# The agent moves from single → composite by emitting `compose`. Going
+# back composite → single isn't supported; we treat it as a (rare) bad
+# proposal and raise.
+
+def run_loop_axis_a(
+    problem: Problem,
+    proposer: Proposer,
+    *,
+    max_iters: int = 12,
+    plot_dir: Optional[Path] = None,
+    accept: Optional[AcceptanceCriterion] = None,
+    inner_max_evals: int = 200,
+) -> RunResult:
+    """Run `proposer` on `problem` for Axis-A (compositional model recovery).
+
+    Same iteration semantics as `run_loop` — one outer iter = one inner
+    fit + one proposer call — but the inner fit dispatches to
+    ``fit_composite`` when the agent has emitted a `compose` action.
+
+    `problem.composition` carries the ground truth and is **not** read
+    by this loop — it's there for the eval harness to score composition
+    match rate (the primary Axis-A metric, per the axes spec).
+
+    Acceptance is the same Phase-2 criterion (param recovery + χ²);
+    Axis-A's composition-match metric is computed separately in
+    `eval/report.py` from the agent's final action and the truth.
+
+    Known limitation (deferred to step 3d): if `problem.model` is a
+    composite name (e.g., ``"sphere@hardsphere"``), the iter-0 fit
+    fails because the model isn't in REGISTRY. The Axis-A corpus
+    landing in step 3a starts in composite mode — so for now, the
+    caller must initialize `cur_composition` externally. This will
+    be cleaned up when the corpus is redesigned to start in single-
+    model framing (the proper Axis-A measurement shape).
+    """
+    accept = accept or AcceptanceCriterion()
+    history: list[Iteration] = []
+    cur_init = dict(problem.init_params)
+    cur_model = problem.model
+    cur_composition: Optional[Composition] = None
+
+    # If the problem starts in composite mode (current step-3a corpus
+    # shape), pull the composition off the Problem so iter 0 fits the
+    # composite. The starting-framing redesign (step 3d) will flip
+    # this: composition starts None and the agent has to emit compose
+    # to enter composite mode.
+    if problem.composition is not None and cur_model in COMPOSITE_REGISTRY:
+        cur_composition = problem.composition
+
+    final_params: dict[str, float] = {}
+    final_chi2 = float("inf")
+
+    for i in range(max_iters):
+        # --- inner fit (dispatches by mode) ---------------------------
+        if cur_composition is not None:
+            fit = fit_composite(
+                cur_composition,
+                factor_specs=REGISTRY,
+                q=problem.q, Iq=problem.Iq, dIq=problem.dIq,
+                init_params=cur_init,
+                max_evals=inner_max_evals,
+            )
+            fit_label = cur_composition.to_sasmodels_name()
+        else:
+            spec = REGISTRY[cur_model]
+            fit = fit_one(
+                spec, problem.q, problem.Iq, problem.dIq,
+                init_params=cur_init, max_evals=inner_max_evals,
+            )
+            fit_label = cur_model
+
+        plot_path: Optional[Path] = None
+        if plot_dir is not None:
+            plot_dir.mkdir(parents=True, exist_ok=True)
+            plot_path = render_fit_plot(
+                problem.q, problem.Iq, problem.dIq, fit.fit_curve,
+                out_path=plot_dir / f"iter_{i:02d}.png",
+                title=f"{proposer.name} | {fit_label} | iter {i} | "
+                      f"χ²ᵣ={fit.chi2_red:.2f}",
+            )
+
+        final_params = fit.fit_params
+        final_chi2 = fit.chi2_red
+
+        # --- objective acceptance check -------------------------------
+        if accept.check(problem, fit.fit_params, fit.chi2_red):
+            history.append(Iteration(
+                iter=i, model=fit_label, init_params=cur_init,
+                fit_params=fit.fit_params, chi2_red=fit.chi2_red,
+                n_inner_evals=fit.n_evals, plot_path=plot_path,
+                proposer_action="(harness-accepted)", proposer_note="",
+            ))
+            return RunResult(
+                accepted=True, iterations=history,
+                iters_to_accept=i + 1,
+                total_inner_evals=sum(it.n_inner_evals for it in history),
+                final_chi2_red=final_chi2, final_params=final_params,
+            )
+
+        # --- proposer turn --------------------------------------------
+        rec = Iteration(
+            iter=i, model=fit_label, init_params=cur_init,
+            fit_params=fit.fit_params, chi2_red=fit.chi2_red,
+            n_inner_evals=fit.n_evals, plot_path=plot_path,
+        )
+        history.append(rec)
+        proposal = proposer.propose(problem, history)
+        rec.proposer_action = proposal.action
+        rec.proposer_note = proposal.note
+
+        if proposal.action in ("accept", "give_up"):
+            return RunResult(
+                accepted=False, iterations=history,
+                iters_to_accept=max_iters + 1,
+                total_inner_evals=sum(it.n_inner_evals for it in history),
+                final_chi2_red=final_chi2, final_params=final_params,
+            )
+
+        if proposal.action == "compose":
+            if proposal.composition is None:
+                raise ValueError(
+                    "Proposal action='compose' must carry a "
+                    "`composition` dict; got None."
+                )
+            from ..models.composite import composition_from_dict
+            cur_composition = composition_from_dict(proposal.composition)
+            # cur_model becomes the composite's sasmodels name for
+            # display purposes; the substrate dispatch in the next iter
+            # uses cur_composition, not cur_model.
+            cur_model = cur_composition.to_sasmodels_name()
+            if proposal.init_params is None:
+                # Same as Phase-2: missing init means "I don't know how
+                # to continue" → terminate.
+                return RunResult(
+                    accepted=False, iterations=history,
+                    iters_to_accept=max_iters + 1,
+                    total_inner_evals=sum(it.n_inner_evals for it in history),
+                    final_chi2_red=final_chi2, final_params=final_params,
+                )
+            cur_init = dict(proposal.init_params)
+            continue
+
+        if proposal.action == "switch_model":
+            if cur_composition is not None:
+                # In composite mode, switch_model is ambiguous — does
+                # the agent mean a different composite, or fall back
+                # to a single model? Reject as bad proposal; agent
+                # should emit a new `compose` to switch composites.
+                raise ValueError(
+                    "switch_model is not supported in composite mode; "
+                    "emit `compose` with a new composition instead."
+                )
+            if proposal.model:
+                cur_model = proposal.model
 
         if proposal.init_params is None:
             return RunResult(
