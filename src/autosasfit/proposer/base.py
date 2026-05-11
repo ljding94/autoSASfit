@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Optional, Protocol
 
+from ..models.composite import Composition
+
 
 # `numpy.ndarray` typed as Any to keep this module importable without numpy.
 ArrayLike = Any
@@ -37,6 +39,11 @@ class Problem:
 
     `init_params` is the deliberately-bad starting guess used for the very
     first inner fit. After that, the Proposer picks subsequent guesses.
+
+    `composition` is None for Phase-1/2 single-model problems. For
+    Phase-3 / Axis-A problems, it carries the ground-truth composition
+    (factors + combinator) the agent is being asked to recover.
+    The Phase-2 controller does not inspect it.
     """
     model: str
     true_params: dict[str, float]
@@ -46,6 +53,7 @@ class Problem:
     dIq: ArrayLike
     seed: int = 0
     label: str = ""
+    composition: Optional[Composition] = None
 
 
 Action = Literal["refine", "switch_model", "compose", "accept", "give_up"]

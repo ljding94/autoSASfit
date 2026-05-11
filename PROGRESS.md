@@ -30,6 +30,7 @@ write-ups for each landed-gate live in the dated entries below.
 | 6 | **Classical floor on reported seed** — `run_baseline_eval.py --corpus reported` for apples-to-apples vs the gate-5 LLM row | ✅ 2026-05-10 | random **75%** / LH 65% / bumps_restart 65% / heuristic 60% on `REPORTED_SEED=20260428`. LLM (75%) ties random for top overall; uniquely 100% on sphere; lags random on cylinder (40% vs 60%). LLM also has Axis-B (0.94, 1.0) — classical lanes don't report calibration. `outputs/baseline_eval_reported/`. |
 | 7a | **Phase-3 protocol primitive** — `compose` action + `composition` field on `Proposal`; controller raises `NotImplementedError` until Phase-3 substrate lands | ✅ 2026-05-10 | step 1 of 4 toward Axes A + C. `proposer/base.py` extends `Action` Literal; `loop/controller.py` defends with a clear error. Existing classical proposers unchanged. 42/42 sandbox tests green (was 40, +2 for protocol-primitive coverage). |
 | 7b | **Phase-3 substrate** — `Composition` dataclass + `fit_composite()` parallel to `fit_one`; sasmodels native `a@b` (product) / `a+b` (sum) string syntax used | ✅ 2026-05-10 | step 2 of 4. `models/composite.py` (sandbox-importable, lazy-imports nothing); `fitting/bumps_wrapper.fit_composite` (lazy-imports sasmodels — same two-tier pattern). Phase-2 `fit_one` untouched, gate-5 substrate still bit-for-bit. **54/54 sandbox tests green** (+12 for composite coverage: dataclass smoke, validation, dict-parsing, name building, round-trip). |
+| 7c | **Phase-3 registry + corpus** — `CompositeSpec` + `COMPOSITE_REGISTRY` (3 entries) + `generate_axis_a_corpus()`; `Problem.composition` field carries ground truth | ✅ 2026-05-10 | step 3a of 4. Three Axis-A composites: `sphere@hardsphere`, `power_law+gaussian_peak`, `core_shell_sphere@stickyhardsphere` — parameter sets verified empirically against sasmodels (no guessing). End-to-end smoke: 6 problems generated cleanly with real I(Q) data. Phase-2 `REGISTRY` and `generate_corpus` bit-for-bit unchanged. **60/60 sandbox tests** (+6: registry well-formedness, renamed-param pinning, `Problem.composition` backward compat). |
 
 Meta-changes shipped alongside the gates:
 
@@ -45,6 +46,84 @@ Meta-changes shipped alongside the gates:
 ---
 
 ## 2026-05-10
+
+### Gate 7c — Phase-3 registry + Axis-A corpus generator
+
+> Step 3a of 4 toward Phase 3 (Axes A + C). Data-layer only:
+> declares Phase-3 composite specs and a corpus generator that emits
+> Axis-A problems with ground-truth composition attached. Does NOT
+> yet wire the controller to dispatch compose actions (that's 3b)
+> and does NOT yet write the Axis-A LLM prompt (3c).
+
+#### What changed
+
+- **`src/autosasfit/models/composite.py`**: added `CompositeSpec`
+  dataclass (parallel to ModelSpec — composition + description +
+  fit_params + bounds + fixed_params + log_scale_params; `.name`
+  property returns the sasmodels composite string).
+- **`src/autosasfit/models/composite_registry.py`** (new):
+  `COMPOSITE_REGISTRY: dict[str, CompositeSpec]` with three entries
+  from the axes spec:
+    - `sphere@hardsphere` — monodisperse spheres in a hardsphere
+      fluid (P·S, low-Q correlation peak modulating sphere form factor)
+    - `power_law+gaussian_peak` — fractal background plus a Bragg-like
+      peak (additive, prefixed `A_*` / `B_*` params per sasmodels
+      convention)
+    - `core_shell_sphere@stickyhardsphere` — two-shell scatterer with
+      attractive potential (8 fitted params, the hardest Axis-A entry)
+  - **Parameter names were verified empirically** against
+    `sasmodels.core.load_model_info(name).parameters.kernel_parameters`
+    before being committed — no guessing. The renames sasmodels does
+    inside products (`radius` → `radius_effective` for hardsphere
+    inside `sphere@hardsphere`) are pinned in the spec.
+- **`src/autosasfit/proposer/base.py`**: `Problem.composition:
+  Optional[Composition] = None`. Backward-compat for Phase-1/2
+  problems (default None); Phase-3 problems carry the ground-truth
+  composition. The Phase-2 controller does not inspect it; the
+  Phase-3 controller (step 3b) will.
+- **`src/autosasfit/eval/corpus.py`**: added
+  `generate_axis_a_corpus(composites=None, *, n_per_composite=5,
+  rel_noise=0.03, seed=DEV_SEED)`. Same draw-truth → forward-simulate
+  → bad-init shape as `generate_corpus`, iterates over
+  `COMPOSITE_REGISTRY`, attaches ground-truth `Composition` to each
+  emitted `Problem`. Reuses `_bad_init` (duck-types `CompositeSpec`
+  via its `fit_params`/`bounds`/`log_scale_params` fields).
+- **`tests/test_composite.py`**: +6 tests covering registry
+  well-formedness, sphere@hardsphere param-rename pinning,
+  power_law+gaussian_peak A_/B_ prefix pinning, and
+  `Problem.composition` backward compat.
+
+#### End-to-end smoke test (real sasmodels)
+
+```bash
+python -c "from autosasfit.eval.corpus import generate_axis_a_corpus, DEV_SEED
+corpus = generate_axis_a_corpus(n_per_composite=2, seed=DEV_SEED)
+for p in corpus: print(p.label, p.composition.factors, p.composition.combinator)"
+```
+
+Produces 6 problems (2 per composite) with real I(Q) values across
+expected magnitudes (e.g., `power_law_plus_gaussian_peak_00` →
+I[0:3] ≈ [1.45e9, 1.35e9, 1.19e9]). All three composite types
+render without sasmodels errors → the empirically-verified
+parameter sets are correct.
+
+#### What's still parked
+
+- Controller dispatch on `compose` — `run_loop` still raises
+  NotImplementedError (Phase-2 contract preserved). Step 3b adds
+  parallel `run_loop_axis_a()`.
+- LLM prompt — `program.md` (Phase-2 lock) is untouched. Step 3c
+  writes a separate `program-axis-a.md` with the `compose` action
+  taught.
+- Axis-A LLM run — step 3d.
+
+#### Tests
+
+- 60/60 pytest (was 54; +6 in `tests/test_composite.py`)
+- 18/18 script-mode in `test_composite.py`
+- 14/14 script-mode in `test_proposer_and_loop.py` (unchanged)
+
+---
 
 ### Gate 7b — Phase-3 substrate (Composition + fit_composite)
 

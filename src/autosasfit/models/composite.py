@@ -19,7 +19,7 @@ and lazy-imports sasmodels at call time.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Literal, cast
 
 
@@ -94,3 +94,32 @@ def composition_from_dict(d: dict[str, Any]) -> Composition:
             f"composition.combinator must be 'product' or 'sum'; got {combinator!r}"
         )
     return Composition(factors=list(factors), combinator=cast(Combinator, combinator))
+
+
+@dataclass
+class CompositeSpec:
+    """Parallel to ``ModelSpec`` for Phase-3 / Axis-A composite kernels.
+
+    Carries the full parameter set sasmodels exposes for the composite
+    (post-renaming — e.g., ``radius_effective`` appears here for
+    ``sphere@hardsphere``). The corpus generator samples true params
+    from ``bounds`` and the inner ``fit_composite`` substrate consumes
+    the same spec to declare fitted parameters with the same bounds.
+
+    Phase-2 ``ModelSpec`` is intentionally not subclassed — keeping the
+    two types nominally distinct prevents the controller / harness
+    from accidentally calling ``fit_one`` on a composite or vice
+    versa. Both are flat dataclasses; conversion would be trivial if
+    ever needed.
+    """
+    composition: Composition
+    description: str
+    fit_params: list[str]
+    bounds: dict[str, tuple[float, float]]
+    fixed_params: dict[str, float] = field(default_factory=dict)
+    log_scale_params: set[str] = field(default_factory=set)
+
+    @property
+    def name(self) -> str:
+        """The sasmodels composite-kernel name (e.g., ``sphere@hardsphere``)."""
+        return self.composition.to_sasmodels_name()

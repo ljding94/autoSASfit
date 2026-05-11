@@ -29,9 +29,12 @@ on the reported seed for the published number.
 from __future__ import annotations
 
 import math
+from typing import Optional
+
 import numpy as np
 
 from ..data.synthetic import generate
+from ..models.composite_registry import COMPOSITE_REGISTRY
 from ..models.registry import REGISTRY
 from ..proposer.base import Problem
 
@@ -98,5 +101,68 @@ def generate_corpus(
                 q=q, Iq=Iq, dIq=dIq,
                 seed=int(rng.integers(0, 1 << 31)),
                 label=f"{m}_{k:02d}",
+            ))
+    return problems
+
+
+# ---------------------------------------------------------------------------
+# Phase-3 / Axis-A corpus.
+#
+# Same draw-truth → forward-simulate → draw-bad-init shape as
+# generate_corpus above, but iterates over composite specs from
+# COMPOSITE_REGISTRY. The Problem returned carries the ground-truth
+# Composition so the harness can score "did the agent recover the
+# right (factors, combinator) regardless of param-recovery quality"
+# (Axis-A's primary metric).
+
+def generate_axis_a_corpus(
+    composites: Optional[list[str]] = None,
+    *,
+    n_per_composite: int = 5,
+    rel_noise: float = 0.03,
+    seed: int = DEV_SEED,
+) -> list[Problem]:
+    """Generate Axis-A problems (composite ground truth) for the LLM lane.
+
+    `composites` is a list of sasmodels composite names ("sphere@hardsphere",
+    etc.) — must be keys in ``COMPOSITE_REGISTRY``. Default: all three
+    registered composites.
+
+    Each problem's ``Problem.composition`` carries the ground-truth
+    composition the agent must recover. Per the axes spec, the *primary*
+    Axis-A metric is composition match rate (factor set × combinator),
+    independent of parameter recovery — so even if the inner fit gets
+    a bad χ², the row is "correct" iff the agent picked the right
+    composition.
+    """
+    if composites is None:
+        composites = list(COMPOSITE_REGISTRY)
+    rng = np.random.default_rng(seed)
+    problems: list[Problem] = []
+    for c_name in composites:
+        spec = COMPOSITE_REGISTRY[c_name]
+        for k in range(n_per_composite):
+            true_p: dict[str, float] = {}
+            for p in spec.fit_params:
+                lo, hi = spec.bounds[p]
+                true_p[p] = _sample_param(rng, lo, hi,
+                                          p in spec.log_scale_params)
+            full_p = dict(spec.fixed_params)
+            full_p.update(true_p)
+            data_seed = int(rng.integers(0, 1 << 31))
+            q, Iq, dIq = generate(c_name, full_p, rel_noise=rel_noise,
+                                  seed=data_seed)
+            # _bad_init expects a Phase-2-shaped spec; we duck-type by
+            # constructing one in-line. The fields _bad_init reads are
+            # fit_params, bounds, log_scale_params.
+            init = _bad_init(rng, true_p, spec)
+            problems.append(Problem(
+                model=c_name,
+                true_params=true_p,
+                init_params=init,
+                q=q, Iq=Iq, dIq=dIq,
+                seed=int(rng.integers(0, 1 << 31)),
+                label=f"{c_name.replace('@', '_at_').replace('+', '_plus_')}_{k:02d}",
+                composition=spec.composition,
             ))
     return problems
