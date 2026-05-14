@@ -34,6 +34,7 @@ write-ups for each landed-gate live in the dated entries below.
 | 7d | **Phase-3 controller dispatch** — parallel `run_loop_axis_a()` in `loop/controller.py`; dispatches to `fit_composite` when in composite mode; handles `compose` action transitioning single→composite | ✅ 2026-05-10 | step 3b of 4. Phase-2 `run_loop` untouched (still raises on compose — gate-5 contract preserved). `switch_model` in composite mode raises (agent should emit a fresh `compose`). Known limitation deferred to step 3d: Axis-A's *primary* metric (composition match rate) requires starting in single-model framing; current step-3a corpus starts in composite mode, so this gate measures parameter recovery on composite problems, not composition recognition. **62/62 sandbox tests** (+2: composite-mode dispatch path + compose-action transition path; both use mocked fit_one/fit_composite so run without sasmodels). |
 | 7e | **Axis-A corpus framing fix** — `CompositeSpec.starting_model`; `generate_axis_a_corpus` now binds `problem.model = <starting single-model>` and draws `init_params` in that single-model namespace | ✅ 2026-05-13 | step 3d of 4. With the new framing, iter 0 fits a single model (`sphere`/`power_law`) against compositional data — the agent sees the misfit and must emit `compose` to escape. That's the actual Axis-A recognition test (was missing in step 3a). `Problem.true_params` stays composite-namespaced for downstream scoring of the post-compose fit. **63/63 sandbox tests** (+1: pinning starting_model values for all 3 composites). Smoke confirmed the new shape via `generate_axis_a_corpus(n_per_composite=2)` → 6 problems with `model='sphere'`, `'power_law'`, `'sphere'` respectively, composite truth attached. |
 | 7f | **Axis-A LLM protocol drafted** — `.claude/skills/autosasfit/program-axis-a.md` written as sister to Phase-2 `program.md` | ✅ 2026-05-13 | step 3c of 4 (draft). Locked protocol contract for Axis-A: role, action set extended with `compose`, decision rules per composite-visual-signature, composition payload shape, composite library description, full loop pseudocode, MCP-surface delta from Phase 2. Document is **ahead of the runtime** — references `start_run(axis="A")`, `list_composites()`, and `submit_proposal(composition=...)`, none of which exist in the MCP runner yet. Step 3e will land those. Phase-2 `program.md` is bit-for-bit unchanged — gate-5 contract preserved. |
+| 7g | **Phase-3 MCP runtime wired** — `start_run(axis="0|A")`, `list_composites()`, `submit_proposal(composition=...)`, Axis-A summary columns, MCP-server tool exposure, entrypoint script | ✅ 2026-05-14 | step 3e of 4. Runtime now consumes `program-axis-a.md`. The Axis-A end-to-end path is: skill loads program-axis-a.md → `start_run(axis="A")` loads `COMPOSITE_REGISTRY` corpus → iter 0 fits single-model → agent emits `compose` → iter 1+ fits composite via `fit_composite` → `write_summary` emits Axis-A CSV with `composition_match` (primary metric) + `iters_to_first_compose`. **68/68 sandbox tests** (+5: axis routing, list_composites contents, compose-rejected-in-axis-0, end-to-end compose→accept with CSV row check, switch_model-rejected-in-composite-mode). Phase-2 surface (locked `program.md`, `start_run(axis="0")`, Phase-2 schema/MCP tool descriptions for default args) bit-for-bit unchanged — gate-5 row reproducibility intact. |
 
 Meta-changes shipped alongside the gates:
 
@@ -45,6 +46,115 @@ Meta-changes shipped alongside the gates:
   ([`dfec791`](https://github.com/ljding94/autoSASfit/commit/dfec791)).
 - This file, `PROGRESS.md`, started 2026-04-27
   ([`2f0e761`](https://github.com/ljding94/autoSASfit/commit/2f0e761)).
+
+---
+
+## 2026-05-14
+
+### Gate 7g — Phase-3 MCP runtime wired (Axis-A end-to-end path live)
+
+> Step 3e of 4. The runtime now consumes `program-axis-a.md`: the
+> MCP runner routes the corpus by `axis`, dispatches the iter loop
+> to `fit_one` or `fit_composite` based on per-problem state, accepts
+> the `compose` action with a `composition` payload, and emits an
+> Axis-A summary CSV with `composition_match` (the primary metric)
+> alongside the Phase-2 columns. The Phase-2 surface is bit-for-bit
+> unchanged at every boundary it can be — `start_run(axis="0")`
+> still routes to the same `phase2_eval_*` output dirs, the locked
+> `program.md` is untouched, and Phase-2 LLMResponse schema is
+> untouched. Gate-5 row reproducibility is intact.
+
+#### What changed
+
+- **`src/autosasfit/eval/mcp_runner.py`**:
+  - Imports: `fit_composite`, `Composition`, `composition_from_dict`,
+    `COMPOSITE_REGISTRY`, `generate_axis_a_corpus`.
+  - `Axis = Literal["0", "A"]`; `RunHandle.axis` field (default "0").
+  - `_ProblemRun.current_composition: Optional[Composition]` —
+    None = single-mode (`fit_one`), set = composite-mode
+    (`fit_composite`). Persisted via wire-format dict in
+    `to_serializable`.
+  - `start_run(axis="0|A")`: validates axis; loads
+    `generate_corpus` (axis="0") or `generate_axis_a_corpus`
+    (axis="A"); writes to distinct output roots
+    (`phase2_eval_{corpus}/` vs `phase3_axis_a_eval_{corpus}/`).
+  - `list_composites()`: parallel to `list_models()`; returns the
+    live `COMPOSITE_REGISTRY` JSON-serialized.
+  - `_run_one_iter()`: dispatches to `fit_composite` or `fit_one`
+    by `current_composition`. Plot title carries phase tag
+    (`phase2` / `phase3-axisA-pre-compose` / `phase3-axisA`).
+  - `submit_proposal()`:
+    - Axis-aware action validation (axis="0" excludes `compose`).
+    - New `composition: Optional[dict]` arg.
+    - `action="compose"` path: validates composition via
+      `composition_from_dict`, checks it's in `COMPOSITE_REGISTRY`,
+      sanitizes params against the composite namespace, transitions
+      `current_composition`, runs next iter via `fit_composite`.
+    - `action="switch_model"` in composite mode → raises (per
+      `program-axis-a.md` §2.2: emit fresh `compose` instead).
+    - Refines in composite mode sanitize against composite bounds.
+  - `_sanitize_composite_params()`: composite analog of
+    `_sanitize_params`.
+  - `write_summary()`: when `axis="A"`, adds 4 Axis-A columns
+    (`truth_composite`, `agent_proposed_composite`,
+    `composition_match`, `iters_to_first_compose`).
+  - `_load_state()`: re-generates the right corpus by
+    `handle.axis`; restores `current_composition` from its
+    persisted dict.
+- **`src/autosasfit/skill/mcp_server.py`**:
+  - `start_run`: new `axis` arg (description spells out both axes).
+  - `submit_proposal`: new `composition` arg; description now
+    covers Axis-A action set.
+  - New `list_composites()` tool.
+  - FastMCP `instructions` updated to mention both axes.
+- **`.claude/skills/autosasfit/SKILL.md`**: routes the agent to
+  `program.md` (default) or `program-axis-a.md` (Axis A); names
+  `list_composites` and the `axis="A"` arg in the tool list.
+- **`scripts/run_phase3_axis_a_eval.sh`** (new): sister to
+  `run_phase2_eval.sh`. Same `claude -p` subprocess pattern;
+  prompt names `program-axis-a.md` and asks for `axis="A"`.
+- **`tests/test_mcp_runner.py`**: +5 Axis-A tests (axis routing,
+  list_composites contents, compose-rejected-in-axis-0, full
+  end-to-end compose→accept with CSV row check,
+  switch_model-rejected-in-composite-mode). All stub `fit_one`
+  and `fit_composite` so they run without sasmodels.
+
+#### Tests
+
+- 68/68 pytest (was 63; +5 for the new Axis-A runner paths).
+- `tests/test_proposer_and_loop.py` and `tests/test_composite.py`
+  unchanged in count, still green.
+- `python -c "import autosasfit.skill.mcp_server"` clean — server
+  module loads.
+- `scripts/run_phase3_axis_a_eval.sh --help` renders the usage
+  block.
+
+#### Phase-2 lock verified
+
+The only edits to Phase-2-locked surfaces were:
+- `submit_proposal` server-side action set widened to include
+  `compose`. **Phase-2 runs reject `compose` at the runner layer**
+  with a clear ValueError, so the locked Phase-2 contract is
+  enforced.
+- `start_run` gained an `axis` arg with default `"0"`. Calls
+  without it land on the Phase-2 path.
+
+No edits to `program.md`, the gate-5 corpus generator, `fit_one`,
+`REGISTRY`, the Phase-2 LLMResponse schema, or the
+`agent/prompts.py:SYSTEM_PROMPT`. The gate-5 scorecard row's
+reproducibility depends only on the unedited surfaces.
+
+#### What's next (step 3f / step 4)
+
+- **Step 3f**: first Axis-A LLM run on `DEV_SEED` to test-drive the
+  protocol. Similar shape to gate-5's sphere subset test-drive but
+  for compositional reasoning. Expected outputs: a small CSV with
+  composition_match rates per composite, and at least one
+  problem-trajectory showing single-model fit → compose →
+  composite fit → accept. After the dev test-drive, the locked
+  Axis-A scorecard row goes on `REPORTED_SEED`.
+- **Step 4**: Axis-C harness (pairwise picker). Different shape
+  from the iteration loop; a separate substrate.
 
 ---
 

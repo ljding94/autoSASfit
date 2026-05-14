@@ -21,6 +21,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from autosasfit.eval import mcp_runner as runner_mod  # noqa: E402
 from autosasfit.eval.mcp_runner import McpRunner  # noqa: E402
+from autosasfit.models.composite import Composition  # noqa: E402
 from autosasfit.proposer.base import Problem  # noqa: E402
 
 
@@ -298,6 +299,191 @@ def test_list_models_returns_registry(tmp_path):
         assert name in models
         assert "fit_params" in models[name]
         assert "bounds" in models[name]
+
+
+# ---------------------------------------------------------------------------
+# Phase-3 / Axis-A tests
+
+def _build_axis_a_runner(tmp_path: Path, problems: list[Problem]) -> McpRunner:
+    """Variant of _build_runner_with_problems that also stubs fit_composite
+    and generate_axis_a_corpus so axis='A' runs without sasmodels."""
+    # First-iter chi^2 proxy uses the first problem's true_params namespace
+    # (single-model — sphere — for the pre-compose iter-0 fit).
+    single_truth = {"radius": 60.0, "scale": 1.0, "background": 1e-3}
+    composite_truth = {"radius": 60.0, "scale": 1.0,
+                       "radius_effective": 80.0, "volfraction": 0.2,
+                       "background": 1e-3}
+
+    stub_fit_one = _make_stub_fit_one({})
+    stub_fit_one.truth = dict(single_truth)  # type: ignore[attr-defined]
+
+    def stub_fit_composite(composition, factor_specs, q, Iq, dIq,
+                            init_params, *, max_evals=200, method="lm"):
+        fit_params = dict(init_params)
+        chi2 = 0.0
+        for p, v in fit_params.items():
+            if p in composite_truth:
+                chi2 += ((v - composite_truth[p])
+                         / max(abs(composite_truth[p]), 1e-12)) ** 2
+        return SimpleNamespace(
+            fit_params=fit_params,
+            chi2_red=chi2,
+            n_evals=42,
+            fit_curve=np.asarray(Iq),
+            success=True,
+        )
+
+    stub_render = _make_stub_render(tmp_path)
+    runner_mod.fit_one = stub_fit_one
+    runner_mod.fit_composite = stub_fit_composite
+    runner_mod.render_fit_plot = stub_render
+    runner_mod.generate_axis_a_corpus = lambda **kw: problems
+    runner_mod.generate_corpus = lambda **kw: problems
+
+    return McpRunner(out_root=tmp_path)
+
+
+def _make_axis_a_problem(label: str) -> Problem:
+    """Phase-3 problem: single-model framing, composite truth attached."""
+    comp = Composition(factors=["sphere", "hardsphere"], combinator="product")
+    # composite-namespace truth (5 params); single-model bad init (3 params)
+    truth = {"scale": 1.0, "radius": 60.0, "radius_effective": 80.0,
+             "volfraction": 0.2, "background": 1e-3}
+    init = {"scale": 0.5, "radius": 30.0, "background": 5e-3}
+    q = np.logspace(-3, -0.5, 50)
+    Iq = np.full_like(q, 1.0)
+    dIq = np.full_like(q, 0.03)
+    return Problem(
+        model="sphere",  # single-model start
+        true_params=truth, init_params=init,
+        q=q, Iq=Iq, dIq=dIq, seed=0, label=label,
+        composition=comp,
+    )
+
+
+def test_start_run_axis_a_routes_to_axis_a_corpus(tmp_path):
+    problems = [_make_axis_a_problem("sphere_at_hardsphere_00")]
+    runner = _build_axis_a_runner(tmp_path, problems)
+    handle = runner.start_run(corpus="dev", run_tag="t-axis-a", axis="A")
+    assert handle.axis == "A"
+    assert "phase3_axis_a_eval_dev" in handle.summary_csv_path
+    # The "phase2_eval_*" dir must NOT appear (output-dir isolation).
+    assert "phase2_eval" not in handle.summary_csv_path
+
+
+def test_list_composites_returns_three_axis_a_entries(tmp_path):
+    problems = [_make_axis_a_problem("sphere_at_hardsphere_00")]
+    runner = _build_axis_a_runner(tmp_path, problems)
+    composites = runner.list_composites()
+    assert set(composites) == {
+        "sphere@hardsphere",
+        "power_law+gaussian_peak",
+        "core_shell_sphere@stickyhardsphere",
+    }
+    sphere_hs = composites["sphere@hardsphere"]
+    assert sphere_hs["factors"] == ["sphere", "hardsphere"]
+    assert sphere_hs["combinator"] == "product"
+    assert sphere_hs["starting_model"] == "sphere"
+    assert "radius_effective" in sphere_hs["fit_params"]
+
+
+def test_axis_a_rejects_compose_when_run_is_axis_0(tmp_path):
+    problems = [_make_problem("sphere_00")]
+    runner = _build_runner_with_problems(tmp_path, problems)
+    handle = runner.start_run(corpus="dev", run_tag="t-phase2", axis="0")
+    runner.get_problem_state(handle.run_id, "sphere_00")
+    try:
+        runner.submit_proposal(
+            handle.run_id, "sphere_00",
+            action="compose", confidence=0.5, diagnosis="nope",
+            composition={"factors": ["sphere", "hardsphere"],
+                         "combinator": "product"},
+            params={"radius": 60.0, "scale": 1.0, "radius_effective": 80.0,
+                    "volfraction": 0.2, "background": 1e-3},
+        )
+    except ValueError as e:
+        assert "compose" in str(e) and "axis" in str(e)
+        return
+    raise AssertionError("expected ValueError on compose in axis=0 run")
+
+
+def test_axis_a_compose_transitions_to_composite_mode_and_accepts(tmp_path):
+    """End-to-end Axis-A path: iter-0 single-model fit is bad → agent
+    emits compose → iter-1 composite fit with truth params → agent accepts
+    → write_summary records composition_match=True."""
+    problems = [_make_axis_a_problem("sphere_at_hardsphere_00")]
+    runner = _build_axis_a_runner(tmp_path, problems)
+    handle = runner.start_run(corpus="dev", run_tag="t-compose", axis="A")
+    # Trigger iter-0 fit (single-model on sphere; bad init = high chi^2).
+    state0 = runner.get_problem_state(handle.run_id, "sphere_at_hardsphere_00")
+    assert state0.model == "sphere"
+    # Agent emits compose with composite truth params.
+    state1 = runner.submit_proposal(
+        handle.run_id, "sphere_at_hardsphere_00",
+        action="compose", confidence=0.6,
+        diagnosis="low-Q damping → P*S with hardsphere",
+        composition={"factors": ["sphere", "hardsphere"],
+                     "combinator": "product"},
+        params={"scale": 1.0, "radius": 60.0, "radius_effective": 80.0,
+                "volfraction": 0.2, "background": 1e-3},
+    )
+    # Now in composite mode, last iter fit composite.
+    assert state1.model == "sphere@hardsphere"
+    # Agent accepts.
+    state2 = runner.submit_proposal(
+        handle.run_id, "sphere_at_hardsphere_00",
+        action="accept", confidence=0.9, diagnosis="composite fit clean",
+    )
+    assert state2.status == "accepted"
+
+    summary = runner.write_summary(handle.run_id)
+    assert summary.n_problems == 1
+    # Read back the CSV row to check Axis-A extra columns.
+    import csv
+    with open(summary.summary_csv_path) as f:
+        rows = list(csv.DictReader(f))
+    assert len(rows) == 1
+    row = rows[0]
+    assert "composition_match" in row, (
+        f"axis-A summary missing composition_match column; got keys "
+        f"{list(row.keys())}"
+    )
+    assert row["truth_composite"] == "sphere@hardsphere"
+    assert row["agent_proposed_composite"] == "sphere@hardsphere"
+    assert row["composition_match"] == "True"
+    # First compose was at iter 0 (recorded against last iter at the time
+    # of submit_proposal, which was iter 0 since iter-0 had just been
+    # produced via get_problem_state).
+    assert int(row["iters_to_first_compose"]) == 1
+
+
+def test_axis_a_switch_model_in_composite_mode_raises(tmp_path):
+    problems = [_make_axis_a_problem("sphere_at_hardsphere_00")]
+    runner = _build_axis_a_runner(tmp_path, problems)
+    handle = runner.start_run(corpus="dev", run_tag="t-bad-switch", axis="A")
+    runner.get_problem_state(handle.run_id, "sphere_at_hardsphere_00")
+    # Transition into composite mode.
+    runner.submit_proposal(
+        handle.run_id, "sphere_at_hardsphere_00",
+        action="compose", confidence=0.6, diagnosis="compose",
+        composition={"factors": ["sphere", "hardsphere"],
+                     "combinator": "product"},
+        params={"scale": 1.0, "radius": 60.0, "radius_effective": 80.0,
+                "volfraction": 0.2, "background": 1e-3},
+    )
+    # switch_model should now raise.
+    try:
+        runner.submit_proposal(
+            handle.run_id, "sphere_at_hardsphere_00",
+            action="switch_model", confidence=0.5, diagnosis="cant",
+            model="cylinder",
+            params={"radius": 50.0, "length": 200.0,
+                    "scale": 1.0, "background": 1e-3},
+        )
+    except ValueError as e:
+        assert "composite mode" in str(e) or "fresh `compose`" in str(e)
+        return
+    raise AssertionError("expected ValueError on switch_model in composite mode")
 
 
 # ---------------------------------------------------------------------------

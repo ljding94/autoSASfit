@@ -1,28 +1,43 @@
 ---
 name: autosasfit
-description: Drive an autoSASfit Phase-2 benchmark run end-to-end via the autosasfit MCP server. Use when the user asks to run the autoSASfit benchmark, run Phase-2 eval, run gate 5, evaluate the LLM lane on the SAS curve-fitting corpus, or anything similar. Reads the locked operator playbook from program.md in this directory and follows it exactly — the agent acts as a domain-expert SAS critic, not a coding assistant.
+description: Drive an autoSASfit benchmark run end-to-end via the autosasfit MCP server. Supports Phase-2 (Axis 0 + Axis B, default) and Phase-3 (Axis A, compositional reasoning). Use when the user asks to run the autoSASfit benchmark, run Phase-2 / Axis-0 / Axis-B eval, run Phase-3 / Axis-A eval, or evaluate the LLM lane on the SAS curve-fitting corpus. Reads the locked operator playbook from program.md (Axis 0+B) or program-axis-a.md (Axis A) in this directory and follows it exactly — the agent acts as a domain-expert SAS critic, not a coding assistant.
 ---
 
-# autoSASfit Phase-2 benchmark skill
+# autoSASfit benchmark skill
 
-This skill drives the autoSASfit Phase-2 benchmark (gate 5 of the
-project). When loaded, you are not writing or editing code; you are
-**running an experiment** — acting as a vision-LLM critic on
-small-angle scattering curve-fitting problems.
+This skill drives the autoSASfit benchmark suite. When loaded, you
+are not writing or editing code; you are **running an experiment**
+— acting as a vision-LLM critic on small-angle scattering
+curve-fitting problems.
 
 ## Before you begin
 
-1. **Read the full operator playbook**: `program.md` in this directory.
-   It is the locked protocol contract — the single source of truth
-   for what to do, how to log, and when to stop. Treat it as
-   authoritative; don't improvise.
+1. **Read the operator playbook for the requested axis:**
+   - Phase 2 / Axis 0 + B (default): [`program.md`](program.md) —
+     single-model fitting, locked since gate-5.
+   - Phase 3 / Axis A: [`program-axis-a.md`](program-axis-a.md) —
+     compositional reasoning (P·S products, P+Q sums), `compose`
+     action added.
 
-2. **Confirm the autoSASfit MCP server is connected.** The five
-   tools you'll use — `start_run`, `list_models`, `get_problem_state`,
-   `submit_proposal`, `write_summary` — come from the
-   `autosasfit` MCP server registered in `.mcp.json` at the project
-   root. If those tools are not available, stop and tell the user
-   the MCP server isn't connected; don't try to run the benchmark
+   If the user asks for "Axis A", "Phase 3", "compositional
+   benchmark", "Axis-A eval", or names a specific composite like
+   `sphere@hardsphere`, use the Axis-A playbook. Otherwise (e.g.,
+   "run the benchmark", "gate 5", "Axis 0", "Axis B"), use
+   `program.md`. The playbooks are locked protocol contracts —
+   single sources of truth for what to do, how to log, and when to
+   stop. Treat them as authoritative; don't improvise.
+
+2. **Confirm the autoSASfit MCP server is connected.** The tools
+   you'll use come from the `autosasfit` MCP server registered in
+   `.mcp.json` at the project root:
+   - Phase-2 / Axis 0 + B: `start_run`, `list_models`,
+     `get_problem_state`, `submit_proposal`, `write_summary`.
+   - Phase-3 / Axis A: same five plus `list_composites` (the
+     composite library). Pass `axis="A"` to `start_run` to enable
+     Axis-A mode and the `compose` action on `submit_proposal`.
+
+   If those tools are not available, stop and tell the user the
+   MCP server isn't connected; don't try to run the benchmark
    without them.
 
 3. **Do not use any other tool.** No Bash, no Edit, no Write, no
@@ -35,14 +50,16 @@ small-angle scattering curve-fitting problems.
 
 ## Running the benchmark
 
-Once you've read `program.md`:
+Once you've read the appropriate playbook:
 
 1. Pick a run tag based on the user's request (default:
-   `<YYYY-MM-DD>-<model>-<corpus>`, e.g. `2026-05-01-opus47-dev`).
+   `<YYYY-MM-DD>-<model>-<corpus>` for Phase-2 or
+   `<YYYY-MM-DD>-<model>-<corpus>-axis-a` for Axis A).
 2. Default to `corpus="dev"` unless the user explicitly says "reported"
    — never run against the reported corpus while iterating the prompt.
-3. Follow `program.md` §1 (Setup) → §5 (Loop) → `write_summary`.
-4. Report back to the user with the summary stats and the path to
+3. For Axis A, pass `axis="A"` to `start_run`.
+4. Follow the playbook §1 (Setup) → §5 (Loop) → `write_summary`.
+5. Report back to the user with the summary stats and the path to
    the per-problem CSV.
 
 ## What success looks like

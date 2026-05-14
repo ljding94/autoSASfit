@@ -49,12 +49,18 @@ _RUNNER = McpRunner()
 mcp = FastMCP(
     "autosasfit",
     instructions=(
-        "Phase-2 benchmark for vision-LLM scientific judgment on "
-        "small-angle scattering curve fitting. The agent drives one "
-        "outer iteration at a time per problem; this server runs the "
-        "inner bumps fit, renders the canonical plot, and returns the "
-        "next state. See `.claude/skills/autosasfit/program.md` for "
-        "the locked operator playbook."
+        "Benchmark for vision-LLM scientific judgment on small-angle "
+        "scattering (SAS) curve fitting. The agent drives one outer "
+        "iteration at a time per problem; this server runs the inner "
+        "bumps fit (single-model or composite), renders the canonical "
+        "plot, and returns the next state. Two axes available via the "
+        "`axis` arg on `start_run`:\n"
+        "  axis='0' (Phase 2 / Axis 0 + B): single-model fitting; see "
+        "`.claude/skills/autosasfit/program.md`.\n"
+        "  axis='A' (Phase 3 / Axis A): compositional reasoning; the "
+        "agent must emit `compose` after recognizing data is P*S or "
+        "P+Q from a single-model misfit; see "
+        "`.claude/skills/autosasfit/program-axis-a.md`."
     ),
 )
 
@@ -90,20 +96,25 @@ def _dict_to_pretty_json(d: dict) -> str:
 
 @mcp.tool(
     description=(
-        "Start (or resume) a Phase-2 benchmark run. Returns the run "
-        "handle including the list of problem_ids to iterate through "
-        "and where the summary CSV will be written. Always call this "
+        "Start (or resume) a benchmark run. Returns the run handle "
+        "including the list of problem_ids to iterate through and "
+        "where the summary CSV will be written. Always call this "
         "first before any other tool. Resuming an existing run_tag "
-        "reloads state from disk, so partial progress is not lost."
+        "reloads state from disk, so partial progress is not lost. "
+        "`axis` selects the benchmark: '0' (Phase-2, default — see "
+        "program.md) or 'A' (Phase-3 Axis A — see program-axis-a.md; "
+        "loads a compositional corpus and enables the `compose` "
+        "action on submit_proposal)."
     ),
 )
 def start_run(
     corpus: str = "dev",
     run_tag: Optional[str] = None,
     model_filter: Optional[list[str]] = None,
+    axis: str = "0",
 ) -> dict:
     handle = _RUNNER.start_run(
-        corpus=corpus, run_tag=run_tag, model_filter=model_filter,
+        corpus=corpus, run_tag=run_tag, model_filter=model_filter, axis=axis,
     )
     return asdict(handle)
 
@@ -118,6 +129,22 @@ def start_run(
 )
 def list_models() -> dict:
     return _RUNNER.list_models()
+
+
+@mcp.tool(
+    description=(
+        "Return the live composite library (Phase-3 / Axis A only). "
+        "Each entry shows the factor list, combinator (`product` for "
+        "P(Q)*S(Q) or `sum` for P+Q additive), composite-namespace "
+        "parameter set with sasmodels post-rename names "
+        "(e.g., `radius_effective` for hardsphere inside a product), "
+        "bounds, fixed params, and the single-model the corpus starts "
+        "from. You may only `compose` from this library. Call once at "
+        "the start of an axis='A' run."
+    ),
+)
+def list_composites() -> dict:
+    return _RUNNER.list_composites()
 
 
 @mcp.tool(
@@ -137,17 +164,20 @@ def get_problem_state(run_id: str, problem_id: str) -> list:
 @mcp.tool(
     description=(
         "Submit your proposal for the next outer iteration on this "
-        "problem. Action is one of refine, switch_model, accept, or "
-        "give_up. For refine and switch_model, params is required and "
-        "must contain a complete dict over the chosen model's "
-        "fit_params (out-of-bounds values will be clamped). For "
-        "switch_model, model is also required. Confidence in [0, 1] "
-        "is your honest estimate that the *current* fit (the one in "
-        "the plot you just saw) would pass the harness's objective "
-        "acceptance criterion. Diagnosis is a one-paragraph free-text "
-        "explanation. Returns the updated state + new plot inline; if "
-        "the run is now terminal (accepted / given_up / max_iters), "
-        "advance to the next problem in the run handle."
+        "problem. Action set depends on the run's axis:\n"
+        "  axis='0' (Phase 2): refine | switch_model | accept | give_up\n"
+        "  axis='A' (Phase 3): refine | switch_model | compose | accept | give_up\n"
+        "For refine, switch_model, and compose, `params` is required and "
+        "must contain a complete dict over the relevant fit_params namespace "
+        "(out-of-bounds values clamped). For switch_model, `model` is also "
+        "required. For compose, `composition` is required and must match "
+        "an entry in `list_composites()` (a dict with `factors` and "
+        "`combinator`). Confidence in [0, 1] is your honest estimate that "
+        "the *current* fit (the one in the plot you just saw) would pass "
+        "the harness's objective acceptance criterion. Diagnosis is a "
+        "one-paragraph free-text explanation. Returns the updated state + "
+        "new plot inline; if the run is now terminal (accepted / given_up "
+        "/ max_iters), advance to the next problem in the run handle."
     ),
 )
 def submit_proposal(
@@ -158,16 +188,19 @@ def submit_proposal(
     diagnosis: str,
     model: Optional[str] = None,
     params: Optional[dict[str, float]] = None,
+    composition: Optional[dict[str, Any]] = None,
 ) -> list:
-    if action not in ("refine", "switch_model", "accept", "give_up"):
+    # Server-side action set is the union — runner does axis-aware
+    # validation against the per-run axis.
+    if action not in ("refine", "switch_model", "compose", "accept", "give_up"):
         raise ValueError(
-            f"action must be refine | switch_model | accept | give_up, "
-            f"got {action!r}"
+            f"action must be refine | switch_model | compose | accept | "
+            f"give_up, got {action!r}"
         )
     state = _RUNNER.submit_proposal(
         run_id=run_id, problem_id=problem_id,
         action=action, confidence=confidence, diagnosis=diagnosis,
-        model=model, params=params,
+        model=model, params=params, composition=composition,
     )
     return _state_with_plot(state)
 
