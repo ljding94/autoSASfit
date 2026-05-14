@@ -33,6 +33,7 @@ write-ups for each landed-gate live in the dated entries below.
 | 7c | **Phase-3 registry + corpus** — `CompositeSpec` + `COMPOSITE_REGISTRY` (3 entries) + `generate_axis_a_corpus()`; `Problem.composition` field carries ground truth | ✅ 2026-05-10 | step 3a of 4. Three Axis-A composites: `sphere@hardsphere`, `power_law+gaussian_peak`, `core_shell_sphere@stickyhardsphere` — parameter sets verified empirically against sasmodels (no guessing). End-to-end smoke: 6 problems generated cleanly with real I(Q) data. Phase-2 `REGISTRY` and `generate_corpus` bit-for-bit unchanged. **60/60 sandbox tests** (+6: registry well-formedness, renamed-param pinning, `Problem.composition` backward compat). |
 | 7d | **Phase-3 controller dispatch** — parallel `run_loop_axis_a()` in `loop/controller.py`; dispatches to `fit_composite` when in composite mode; handles `compose` action transitioning single→composite | ✅ 2026-05-10 | step 3b of 4. Phase-2 `run_loop` untouched (still raises on compose — gate-5 contract preserved). `switch_model` in composite mode raises (agent should emit a fresh `compose`). Known limitation deferred to step 3d: Axis-A's *primary* metric (composition match rate) requires starting in single-model framing; current step-3a corpus starts in composite mode, so this gate measures parameter recovery on composite problems, not composition recognition. **62/62 sandbox tests** (+2: composite-mode dispatch path + compose-action transition path; both use mocked fit_one/fit_composite so run without sasmodels). |
 | 7e | **Axis-A corpus framing fix** — `CompositeSpec.starting_model`; `generate_axis_a_corpus` now binds `problem.model = <starting single-model>` and draws `init_params` in that single-model namespace | ✅ 2026-05-13 | step 3d of 4. With the new framing, iter 0 fits a single model (`sphere`/`power_law`) against compositional data — the agent sees the misfit and must emit `compose` to escape. That's the actual Axis-A recognition test (was missing in step 3a). `Problem.true_params` stays composite-namespaced for downstream scoring of the post-compose fit. **63/63 sandbox tests** (+1: pinning starting_model values for all 3 composites). Smoke confirmed the new shape via `generate_axis_a_corpus(n_per_composite=2)` → 6 problems with `model='sphere'`, `'power_law'`, `'sphere'` respectively, composite truth attached. |
+| 7f | **Axis-A LLM protocol drafted** — `.claude/skills/autosasfit/program-axis-a.md` written as sister to Phase-2 `program.md` | ✅ 2026-05-13 | step 3c of 4 (draft). Locked protocol contract for Axis-A: role, action set extended with `compose`, decision rules per composite-visual-signature, composition payload shape, composite library description, full loop pseudocode, MCP-surface delta from Phase 2. Document is **ahead of the runtime** — references `start_run(axis="A")`, `list_composites()`, and `submit_proposal(composition=...)`, none of which exist in the MCP runner yet. Step 3e will land those. Phase-2 `program.md` is bit-for-bit unchanged — gate-5 contract preserved. |
 
 Meta-changes shipped alongside the gates:
 
@@ -48,6 +49,64 @@ Meta-changes shipped alongside the gates:
 ---
 
 ## 2026-05-13
+
+### Gate 7f — Axis-A LLM protocol drafted (`program-axis-a.md`)
+
+> Step 3c of 4. Writes the sister document to Phase-2 `program.md`
+> for the Axis-A benchmark. The runtime to consume it (MCP-server
+> extensions for `axis="A"`, `list_composites()`, and
+> `submit_proposal(composition=...)`) lands in step 3e. The locked
+> Phase-2 `program.md` is **bit-for-bit unchanged** — gate-5
+> contract preserved.
+
+#### What landed
+
+- **`.claude/skills/autosasfit/program-axis-a.md`** (new): locked
+  operator playbook for Axis-A. Mirrors the Phase-2 structure:
+  - §0 role framing — compositional reasoning, not generic
+    helpfulness; primary metric is composition match rate, not χ².
+  - §1 setup — adds `axis="A"` arg to `start_run`, `list_composites()`
+    tool to enumerate the composite library.
+  - §2 decision rules — five visible signatures that should trigger
+    `compose` (low-Q correlation peak → P·S with HS; localized bump
+    on log-log → additive with peak component; two-length-scale →
+    core-shell + S(Q)). Explicit guidance on when `switch_model` vs
+    `compose` is the right move.
+  - §3 output format — adds `composition` arg to `submit_proposal`.
+  - §4 logging columns — adds `truth_composite`,
+    `agent_proposed_composite`, `composition_match` (primary),
+    `iters_to_first_compose`.
+  - §5 loop pseudocode (parallel to Phase-2).
+  - Appendix A — MCP-surface delta from Phase 2.
+
+#### What's intentionally NOT done
+
+The MCP runner does not yet implement `axis="A"`,
+`list_composites()`, or `composition=` on `submit_proposal`. The
+program.md is the spec; step 3e is the implementation:
+- `src/autosasfit/eval/mcp_runner.py` — needs `axis` argument on
+  `start_run`, dispatch to `run_loop_axis_a` per-problem, new
+  `composition` arg on `submit_proposal`, plus composite-mode
+  iter accounting.
+- `src/autosasfit/skill/mcp_server.py` — needs the new
+  `list_composites` tool and updated `start_run` /
+  `submit_proposal` schemas.
+- `src/autosasfit/agent/schema.py` — needs a `Phase3Action`
+  (or extended) Pydantic schema with `compose` + `composition`.
+- `scripts/run_phase3_axis_a_eval.py` (or `run_phase2_eval.py
+  --axis A` extension) — the entrypoint.
+
+This is a meaningful runtime increment — comparable in scope to
+gate-7d (controller dispatch). It deserves its own step / commit.
+
+#### Phase-2 lock preserved
+
+`.claude/skills/autosasfit/program.md` (Phase-2): not edited.
+`agent/schema.py:Phase2Action`: not edited. `eval/mcp_runner.py`
+Action Literal: not edited. The gate-5 row's reproducibility
+contract is intact.
+
+---
 
 ### Gate 7e — Axis-A corpus framing fix (single-model start)
 
