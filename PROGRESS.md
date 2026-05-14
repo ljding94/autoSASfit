@@ -32,6 +32,7 @@ write-ups for each landed-gate live in the dated entries below.
 | 7b | **Phase-3 substrate** — `Composition` dataclass + `fit_composite()` parallel to `fit_one`; sasmodels native `a@b` (product) / `a+b` (sum) string syntax used | ✅ 2026-05-10 | step 2 of 4. `models/composite.py` (sandbox-importable, lazy-imports nothing); `fitting/bumps_wrapper.fit_composite` (lazy-imports sasmodels — same two-tier pattern). Phase-2 `fit_one` untouched, gate-5 substrate still bit-for-bit. **54/54 sandbox tests green** (+12 for composite coverage: dataclass smoke, validation, dict-parsing, name building, round-trip). |
 | 7c | **Phase-3 registry + corpus** — `CompositeSpec` + `COMPOSITE_REGISTRY` (3 entries) + `generate_axis_a_corpus()`; `Problem.composition` field carries ground truth | ✅ 2026-05-10 | step 3a of 4. Three Axis-A composites: `sphere@hardsphere`, `power_law+gaussian_peak`, `core_shell_sphere@stickyhardsphere` — parameter sets verified empirically against sasmodels (no guessing). End-to-end smoke: 6 problems generated cleanly with real I(Q) data. Phase-2 `REGISTRY` and `generate_corpus` bit-for-bit unchanged. **60/60 sandbox tests** (+6: registry well-formedness, renamed-param pinning, `Problem.composition` backward compat). |
 | 7d | **Phase-3 controller dispatch** — parallel `run_loop_axis_a()` in `loop/controller.py`; dispatches to `fit_composite` when in composite mode; handles `compose` action transitioning single→composite | ✅ 2026-05-10 | step 3b of 4. Phase-2 `run_loop` untouched (still raises on compose — gate-5 contract preserved). `switch_model` in composite mode raises (agent should emit a fresh `compose`). Known limitation deferred to step 3d: Axis-A's *primary* metric (composition match rate) requires starting in single-model framing; current step-3a corpus starts in composite mode, so this gate measures parameter recovery on composite problems, not composition recognition. **62/62 sandbox tests** (+2: composite-mode dispatch path + compose-action transition path; both use mocked fit_one/fit_composite so run without sasmodels). |
+| 7e | **Axis-A corpus framing fix** — `CompositeSpec.starting_model`; `generate_axis_a_corpus` now binds `problem.model = <starting single-model>` and draws `init_params` in that single-model namespace | ✅ 2026-05-13 | step 3d of 4. With the new framing, iter 0 fits a single model (`sphere`/`power_law`) against compositional data — the agent sees the misfit and must emit `compose` to escape. That's the actual Axis-A recognition test (was missing in step 3a). `Problem.true_params` stays composite-namespaced for downstream scoring of the post-compose fit. **63/63 sandbox tests** (+1: pinning starting_model values for all 3 composites). Smoke confirmed the new shape via `generate_axis_a_corpus(n_per_composite=2)` → 6 problems with `model='sphere'`, `'power_law'`, `'sphere'` respectively, composite truth attached. |
 
 Meta-changes shipped alongside the gates:
 
@@ -43,6 +44,81 @@ Meta-changes shipped alongside the gates:
   ([`dfec791`](https://github.com/ljding94/autoSASfit/commit/dfec791)).
 - This file, `PROGRESS.md`, started 2026-04-27
   ([`2f0e761`](https://github.com/ljding94/autoSASfit/commit/2f0e761)).
+
+---
+
+## 2026-05-13
+
+### Gate 7e — Axis-A corpus framing fix (single-model start)
+
+> Step 3d of 4. Fixes the design issue surfaced in gate-7d: the
+> Axis-A *primary metric* is composition match rate, which only
+> measures something if the agent has to recognize compositionality
+> from the visible misfit and emit `compose`. Step 3a's corpus
+> short-circuited that by binding `problem.model` to the composite
+> name from iter 0; step 3d makes it bind to a single starting model.
+
+#### What changed
+
+- **`src/autosasfit/models/composite.py`**: added
+  `starting_model: str` field to `CompositeSpec`. Docstring updated
+  to explain the field's role in the Axis-A recognition test.
+- **`src/autosasfit/models/composite_registry.py`**: each of the
+  three Axis-A entries now declares a starting_model:
+  - `sphere@hardsphere` → `"sphere"` (the form factor; agent must
+    see S(Q) damping at low Q and emit `compose`)
+  - `power_law+gaussian_peak` → `"power_law"` (agent must spot the
+    Gaussian peak sitting on the power-law backdrop)
+  - `core_shell_sphere@stickyhardsphere` → `"sphere"` (sphere is
+    the simplest single-model approximation; core_shell_sphere
+    isn't in Phase-2 REGISTRY. The agent has to navigate both a
+    model-switch and a compose to reach truth — the hardest path)
+- **`src/autosasfit/eval/corpus.py::generate_axis_a_corpus`**:
+  - `problem.model` is now `spec.starting_model` (a Phase-2 REGISTRY key).
+  - `init_params` is drawn from the **starting model**'s
+    fit_params + bounds (single-model namespace), via `_bad_init`
+    against a projected truth dict.
+  - `true_params` stays in the composite namespace (for scoring
+    the post-compose fit).
+  - `composition` carries the truth Composition as before.
+- **`tests/test_composite.py`**: +1 test
+  (`test_composite_starting_model_is_set_for_all_axis_a_entries`)
+  pinning the three starting_model values.
+
+#### Validation
+
+- 63/63 pytest (was 62; +1 for starting_model test).
+- Smoke (real sasmodels):
+  ```
+  sphere_at_hardsphere_00              model='sphere'      init=[scale, radius, background]
+  power_law_plus_gaussian_peak_00      model='power_law'   init=[scale, power, background]
+  core_shell_sphere_at_stickyhardsphere_00  model='sphere' init=[scale, radius, background]
+  ```
+  All three composite types now produce single-model framed problems
+  with composite-truth `Composition` attached.
+
+#### Controller compatibility
+
+`run_loop_axis_a()` from gate 7d already handles both entry paths:
+- New default: `problem.model` is a Phase-2 REGISTRY key (not in
+  COMPOSITE_REGISTRY) → starts in single-model mode → fit_one →
+  agent emits compose → fit_composite from iter 1 onward.
+- Old fallback (still supported): `problem.model` is a
+  COMPOSITE_REGISTRY key → starts directly in composite mode → can
+  be useful for benchmarking the fit-quality of a known composite
+  separately from the recognition test.
+
+No controller changes were needed for this gate — the dispatch
+logic is shape-agnostic.
+
+#### Next
+
+Step 3c: `program-axis-a.md` (the locked Axis-A LLM protocol). The
+prompt needs to teach the agent (a) what the canonical plot looks
+like for compositional misfits, (b) when to emit `compose` vs
+`switch_model` vs `refine`, (c) the `composition` payload shape, (d)
+the available factors per composite class. Phase-2 `program.md`
+stays untouched — Axis-A gets its own protocol document.
 
 ---
 

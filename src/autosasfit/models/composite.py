@@ -106,6 +106,12 @@ class CompositeSpec:
     from ``bounds`` and the inner ``fit_composite`` substrate consumes
     the same spec to declare fitted parameters with the same bounds.
 
+    ``starting_model`` is the single-model name (a key in Phase-2
+    ``REGISTRY``) that an Axis-A problem starts with — the agent's
+    iter-0 fit uses ``fit_one`` on this model, and the *judgment test*
+    is whether the agent recognizes from the visible misfit that the
+    data is compositional and emits a ``compose`` action.
+
     Phase-2 ``ModelSpec`` is intentionally not subclassed — keeping the
     two types nominally distinct prevents the controller / harness
     from accidentally calling ``fit_one`` on a composite or vice
@@ -116,6 +122,7 @@ class CompositeSpec:
     description: str
     fit_params: list[str]
     bounds: dict[str, tuple[float, float]]
+    starting_model: str
     fixed_params: dict[str, float] = field(default_factory=dict)
     log_scale_params: set[str] = field(default_factory=set)
 

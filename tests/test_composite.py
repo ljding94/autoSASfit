@@ -27,6 +27,7 @@ from autosasfit.models.composite_registry import (  # noqa: E402
     get as composite_get,
     names as composite_names,
 )
+from autosasfit.models.registry import REGISTRY  # noqa: E402
 from autosasfit.proposer.base import Problem  # noqa: E402
 
 
@@ -136,7 +137,8 @@ def test_composite_registry_has_three_axis_a_entries():
 def test_composite_registry_specs_well_formed():
     """For every registered composite: name matches the composition,
     every fit_param has bounds, log_scale_params is a subset of
-    fit_params, fixed_params disjoint from fit_params."""
+    fit_params, fixed_params disjoint from fit_params, and
+    starting_model is a valid Phase-2 REGISTRY key."""
     for name, spec in COMPOSITE_REGISTRY.items():
         assert isinstance(spec, CompositeSpec)
         assert spec.name == name, (
@@ -160,6 +162,12 @@ def test_composite_registry_specs_well_formed():
         # Bounds are well-ordered.
         for p, (lo, hi) in spec.bounds.items():
             assert lo < hi, f"{name}: bound for {p} is non-positive: ({lo}, {hi})"
+        # starting_model must be a Phase-2 REGISTRY key (so the
+        # iter-0 fit_one dispatch works without further plumbing).
+        assert spec.starting_model in REGISTRY, (
+            f"{name}: starting_model {spec.starting_model!r} is not a "
+            f"Phase-2 REGISTRY key; known: {sorted(REGISTRY)}"
+        )
 
 
 def test_composite_registry_get_helper():
@@ -188,6 +196,23 @@ def test_power_law_plus_gaussian_uses_AB_prefixes():
         assert p in spec.fit_params, f"missing {p} in additive composite"
     # No "radius" or sphere-y params here.
     assert "radius" not in spec.fit_params
+
+
+def test_composite_starting_model_is_set_for_all_axis_a_entries():
+    """Pins the load-bearing detail that each Axis-A composite
+    declares a single-model starting frame — that's what makes
+    the Axis-A recognition test possible."""
+    expected_starting = {
+        "sphere@hardsphere": "sphere",
+        "power_law+gaussian_peak": "power_law",
+        "core_shell_sphere@stickyhardsphere": "sphere",
+    }
+    for c_name, expected in expected_starting.items():
+        spec = composite_get(c_name)
+        assert spec.starting_model == expected, (
+            f"{c_name}: starting_model is {spec.starting_model!r}, "
+            f"expected {expected!r}"
+        )
 
 
 def test_problem_accepts_composition_field():
@@ -269,6 +294,8 @@ if __name__ == "__main__":
          test_sphere_hardsphere_has_renamed_radius_effective)
     _run("test_power_law_plus_gaussian_uses_AB_prefixes",
          test_power_law_plus_gaussian_uses_AB_prefixes)
+    _run("test_composite_starting_model_is_set_for_all_axis_a_entries",
+         test_composite_starting_model_is_set_for_all_axis_a_entries)
     _run("test_problem_accepts_composition_field",
          test_problem_accepts_composition_field)
 

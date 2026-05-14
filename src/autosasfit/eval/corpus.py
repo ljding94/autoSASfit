@@ -122,18 +122,28 @@ def generate_axis_a_corpus(
     rel_noise: float = 0.03,
     seed: int = DEV_SEED,
 ) -> list[Problem]:
-    """Generate Axis-A problems (composite ground truth) for the LLM lane.
+    """Generate Axis-A problems for the LLM lane.
 
     `composites` is a list of sasmodels composite names ("sphere@hardsphere",
     etc.) — must be keys in ``COMPOSITE_REGISTRY``. Default: all three
     registered composites.
 
-    Each problem's ``Problem.composition`` carries the ground-truth
-    composition the agent must recover. Per the axes spec, the *primary*
-    Axis-A metric is composition match rate (factor set × combinator),
-    independent of parameter recovery — so even if the inner fit gets
-    a bad χ², the row is "correct" iff the agent picked the right
-    composition.
+    Each problem's shape (per the axes spec):
+
+      - ``model`` = composite's ``starting_model`` (a Phase-2 REGISTRY key,
+        e.g., ``"sphere"`` for the ``sphere@hardsphere`` composite). The
+        iter-0 inner fit runs ``fit_one`` on this single model, so the
+        agent sees the visible misfit on data that's actually
+        compositional — that's the Axis-A judgment test.
+      - ``init_params`` — single-model bad-init drawn from the starting
+        model's Phase-2 spec (not from the composite's bounds).
+      - ``true_params`` — composite-namespace truth (composite-keyed),
+        used downstream for parameter-recovery scoring *after* the
+        agent has emitted ``compose`` and switched the harness into
+        composite-fit mode.
+      - ``composition`` — the truth ``Composition``. The primary Axis-A
+        metric (composition match rate) is computed against this in
+        ``eval/report.py``, independent of parameter recovery.
     """
     if composites is None:
         composites = list(COMPOSITE_REGISTRY)
@@ -141,23 +151,34 @@ def generate_axis_a_corpus(
     problems: list[Problem] = []
     for c_name in composites:
         spec = COMPOSITE_REGISTRY[c_name]
+        starting_spec = REGISTRY[spec.starting_model]
         for k in range(n_per_composite):
+            # Draw composite-namespace truth (for downstream scoring).
             true_p: dict[str, float] = {}
             for p in spec.fit_params:
                 lo, hi = spec.bounds[p]
                 true_p[p] = _sample_param(rng, lo, hi,
                                           p in spec.log_scale_params)
+            # Forward-simulate the actual composite data.
             full_p = dict(spec.fixed_params)
             full_p.update(true_p)
             data_seed = int(rng.integers(0, 1 << 31))
             q, Iq, dIq = generate(c_name, full_p, rel_noise=rel_noise,
                                   seed=data_seed)
-            # _bad_init expects a Phase-2-shaped spec; we duck-type by
-            # constructing one in-line. The fields _bad_init reads are
-            # fit_params, bounds, log_scale_params.
-            init = _bad_init(rng, true_p, spec)
+            # Bad-init is in the *starting-model* (single) namespace,
+            # not the composite namespace. The agent's iter-0 fit will
+            # use these params against the starting model.
+            #
+            # For _bad_init's "5x off" check, we need a truth dict in
+            # the starting-model namespace; project the composite truth
+            # down to the keys that also exist in the starting model.
+            starting_truth = {
+                p: true_p[p] for p in starting_spec.fit_params
+                if p in true_p
+            }
+            init = _bad_init(rng, starting_truth, starting_spec)
             problems.append(Problem(
-                model=c_name,
+                model=spec.starting_model,
                 true_params=true_p,
                 init_params=init,
                 q=q, Iq=Iq, dIq=dIq,

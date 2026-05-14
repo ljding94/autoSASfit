@@ -56,6 +56,7 @@ SPHERE_AT_HARDSPHERE = CompositeSpec(
         "volfraction":       (0.05, 0.45),    # HS valid up to ~0.5
         "background":        (1e-4, 1.0),
     },
+    starting_model="sphere",  # Axis-A test: does the agent see S(Q) damping?
     fixed_params={
         "sld": 4.0, "sld_solvent": 1.0,
         "structure_factor_mode": 0.0,     # decoupling approximation
@@ -94,6 +95,7 @@ POWERLAW_PLUS_GAUSSIANPEAK = CompositeSpec(
         "B_sigma":     (0.001, 0.05),
         "background":  (1e-4, 1.0),
     },
+    starting_model="power_law",  # Axis-A test: does the agent see the peak?
     fixed_params={
         "scale": 1.0,    # universal outer scale; let A_scale/B_scale do the work
     },
@@ -136,6 +138,13 @@ CORESHELL_AT_STICKYHARDSPHERE = CompositeSpec(
         "stickiness":        (0.1, 1.0),
         "background":        (1e-4, 1.0),
     },
+    # Start from `sphere` — the simplest single-model approximation
+    # for a core-shell-with-interactions scatterer. core_shell_sphere
+    # would be a closer single-model fit but isn't in Phase-2 REGISTRY;
+    # starting from sphere forces the agent through both a model-switch
+    # ("this needs core/shell") and a compose ("...with interactions"),
+    # which is the harder Axis-A path.
+    starting_model="sphere",
     fixed_params={
         "sld_core": 1.0, "sld_shell": 2.0, "sld_solvent": 6.0,
         "structure_factor_mode": 0.0,
